@@ -1,76 +1,99 @@
-import express from 'express';
-import axios from 'axios';
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-// ===============================
-// إعدادات Zammad
-// ===============================
-const ZAMMAD_BASE_URL = 'http://102.203.200.112';
+// =======================
+// إعدادات
+// =======================
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mysecret123";
+
+// Zammad
+const ZAMMAD_BASE_URL = "http://102.203.200.112";
 const ZAMMAD_TOKEN =
-  'alnNgMod5eZzSlzlsRH2EpeIToanaof3LmcfMPTFMuk6ILXa_jd6RaVWWc1n7S1P';
+  "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
 
-// ===============================
-// Webhook endpoint
-// ===============================
-app.post('/webhook', async (req, res) => {
+// =======================
+// فحص أن السيرفر شغال
+// =======================
+app.get("/", (req, res) => {
+  res.send("WhatsApp Webhook is running ✅");
+});
+
+// =======================
+// Webhook Verification (Meta)
+// =======================
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified successfully ✅");
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
+// =======================
+// استقبال رسائل واتساب
+// =======================
+app.post("/webhook", async (req, res) => {
+  console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
+
   try {
-    console.log('Incoming webhook:', JSON.stringify(req.body, null, 2));
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const messageObj = change?.value?.messages?.[0];
 
-    // مثال نص الرسالة (عدّل حسب WhatsApp payload لاحقًا)
-    const messageText =
-      req.body?.message || 'عندي مشكلة في الكمبيوتر';
+    if (!messageObj || messageObj.type !== "text") {
+      return res.sendStatus(200);
+    }
 
+    const messageText = messageObj.text.body;
+    const fromNumber = messageObj.from;
+
+    // =======================
     // إنشاء Ticket في Zammad
-    const response = await axios.post(
+    // =======================
+    const zammadResponse = await axios.post(
       `${ZAMMAD_BASE_URL}/api/v1/tickets`,
       {
-        title: 'WhatsApp Ticket',
-        group_id: 1, // تأكد أن group_id موجود
+        title: `WhatsApp Ticket - ${fromNumber}`,
+        group: "Users", // غيرها لو عندك Group باسم مختلف
         article: {
           body: messageText,
-          type: 'note'
-        }
+          type: "note",
+          internal: false,
+        },
+        customer_id: 1, // مهم: Agent token يحتاج customer_id
       },
       {
         headers: {
-          'Content-Type': 'application/json',
-          // ✅ الصيغة الصحيحة فقط
-          'Authorization': `Token token=${ZAMMAD_TOKEN}`
-        }
+          "Authorization": `Token token=${ZAMMAD_TOKEN}`,
+          "Content-Type": "application/json",
+        },
       }
     );
 
-    console.log('Zammad response:', response.data);
-
-    res.status(200).json({
-      success: true,
-      ticket_id: response.data.id
-    });
+    console.log("Ticket created successfully ✅", zammadResponse.data.id);
+    res.sendStatus(200);
   } catch (error) {
-    console.error('Zammad error:', {
+    console.error("Zammad error:", {
       status: error.response?.status,
-      data: error.response?.data
+      data: error.response?.data,
     });
 
-    res.status(500).json({
-      success: false,
-      error: error.response?.data || error.message
-    });
+    res.sendStatus(500);
   }
 });
 
-// ===============================
-// Health check
-// ===============================
-app.get('/', (req, res) => {
-  res.send('WhatsApp → Zammad webhook is running ✅');
-});
-
-// ===============================
-// تشغيل السيرفر (Render compatible)
-// ===============================
+// =======================
+// تشغيل السيرفر
+// =======================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
