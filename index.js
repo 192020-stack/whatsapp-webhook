@@ -36,7 +36,7 @@ app.post("/webhook", async (req, res) => {
 
   try {
     // إرسال إلى زامات باستخدام التوكن
-    await axios.post('https://your-zammad-url/api/v1/tickets', {
+    await axios.post('http://102.203.200.112/', {
       title: 'WhatsApp Ticket',
       article: {
         body: message,
