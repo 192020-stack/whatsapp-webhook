@@ -10,7 +10,7 @@ app.use(express.json());
 const ZAMMAD_BASE_URL = "http://102.203.200.112"; // رابط Zammad
 const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8"; // Token Agent
 const KNOWLEDGE_LINK = "http://102.203.200.112/#knowledge_base/1/locale/ar";
-const WHATSAPP_TOKEN = "YOUR_WHATSAPP_BEARER_TOKEN";
+const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
 const WHATSAPP_PHONE_ID = "1004684596056367";
 
 // ====================================
