@@ -16,7 +16,7 @@ const WHATSAPP_PHONE_ID = "1004684596056367";
 // ====================================
 // قاعدة بيانات مؤقتة لتخزين آخر تذكرة لكل رقم
 // ====================================
-const userTickets = {}; // { "phoneNumber": { ticketId, date, welcomed: true/false } }
+const userTickets = {}; // { "phoneNumber": { ticketId, date, welcomed } }
 
 // ====================================
 // دالة لإرسال رسالة WhatsApp
@@ -101,12 +101,12 @@ app.post("/webhook", async (req, res) => {
   const entry = req.body.entry?.[0];
   const change = entry?.changes?.[0];
   const messageObj = change?.value?.messages?.[0];
-
   if (!messageObj || !["text", "button_reply"].includes(messageObj.type)) return;
 
   const fromNumber = messageObj.from;
   const contactName = change?.value?.contacts?.[0]?.profile?.name || "مستخدم";
 
+  // تحديد نص الرسالة سواء زر أو نص عادي
   let messageText = "";
   if (messageObj.type === "text") {
     messageText = messageObj.text.body;
@@ -115,11 +115,13 @@ app.post("/webhook", async (req, res) => {
   }
 
   const today = new Date().toISOString().split("T")[0];
+
+  // إنشاء أو تحديث بيانات المستخدم في الذاكرة
   if (!userTickets[fromNumber]) userTickets[fromNumber] = { ticketId: null, date: today, welcomed: false };
-  let ticketData = userTickets[fromNumber];
+  const ticketData = userTickets[fromNumber];
 
   // ====================================
-  // إرسال رسالة ترحيب مرة واحدة فقط يوميًا
+  // إرسال رسالة الترحيب مرة واحدة فقط
   // ====================================
   if (!ticketData.welcomed) {
     const welcomeMessage = `مرحبًا ${contactName} 👋\n\nيمكنك تصفح حلولنا هنا: ${KNOWLEDGE_LINK}\nأو الضغط على زر "تواصل مع الدعم" إذا لم تجد إجابة لسؤالك.`;
@@ -129,20 +131,14 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // إذا المستخدم ضغط زر "تواصل مع الدعم"
+  // إذا كانت الرسالة "تواصل مع الدعم" أو أي رسالة بعد إنشاء التذكرة
   // ====================================
-  if (messageText === "تواصل مع الدعم") {
-    if (!ticketData.ticketId) {
-      ticketData.ticketId = await createZammadTicket(fromNumber, messageText);
-    } else {
-      await appendToZammadTicket(ticketData.ticketId, messageText);
-    }
+  if (messageText === "تواصل مع الدعم" && !ticketData.ticketId) {
+    ticketData.ticketId = await createZammadTicket(fromNumber, messageText);
     return;
   }
 
-  // ====================================
-  // أي رسالة أخرى بعد إنشاء التذكرة
-  // ====================================
+  // إذا التذكرة موجودة، أي رسالة تضاف للتذكرة مباشرة
   if (ticketData.ticketId) {
     await appendToZammadTicket(ticketData.ticketId, messageText);
   }
