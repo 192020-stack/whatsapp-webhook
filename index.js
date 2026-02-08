@@ -14,23 +14,15 @@ const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquW
 const WHATSAPP_PHONE_ID = "1004684596056367";
 
 // ====================================
-// قاعدة بيانات مؤقتة لكل مستخدم
+// قاعدة بيانات مؤقتة
 // ====================================
 const userTickets = {};
 
 // ====================================
-// دالة إرسال WhatsApp (تدعم كل أنواع Interactive)
+// إرسال رسالة WhatsApp
 // ====================================
-async function sendWhatsAppMessage(to, message, interactive = null) {
+async function sendWhatsAppMessage(to, payload) {
   try {
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: interactive ? "interactive" : "text",
-      text: interactive ? undefined : { body: message },
-      interactive: interactive || undefined
-    };
-
     await axios.post(
       `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
       payload,
@@ -47,10 +39,9 @@ async function sendWhatsAppMessage(to, message, interactive = null) {
 }
 
 // ====================================
-// استقبال رسائل WhatsApp
+// Webhook
 // ====================================
 app.post("/webhook", async (req, res) => {
-  console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
 
   const entry = req.body.entry?.[0];
@@ -75,58 +66,55 @@ app.post("/webhook", async (req, res) => {
 
   let messageText = "";
   if (messageObj.type === "text") messageText = messageObj.text.body;
-  else if (messageObj.type === "interactive" && messageObj.interactive.type === "button_reply") {
+  else if (
+    messageObj.type === "interactive" &&
+    messageObj.interactive.type === "button_reply"
+  ) {
     messageText = messageObj.interactive.button_reply.title;
   }
 
   // ====================================
-  // رسالة الترحيب (Knowledge + Support)
+  // رسالة ترحيب واحدة فقط (زر + رابط)
   // ====================================
   if (!userData.greeted) {
-    const welcomeMessage =
+    const welcomeText =
       `مرحبًا ${fromName} 👋\n\n` +
       `اختر الخدمة اللي تناسبك 👇\n\n` +
-      `📘 قاعدة المعرفة: حلول للمشاكل الشائعة\n` +
-      `🧑‍💼 الدعم: التحدث مع فريق الدعم`;
+      `📘 *قاعدة المعرفة*\n` +
+      `حلول للمشاكل الشائعة:\n` +
+      `${KNOWLEDGE_LINK}\n\n` +
+      `🧑‍💼 أو اضغط الزر أدناه للتواصل مع الدعم`;
 
-    // 📘 زر قاعدة المعرفة (CTA URL)
-    await sendWhatsAppMessage(fromNumber, welcomeMessage, {
-      type: "cta_url",
-      body: { text: welcomeMessage },
-      action: {
-        name: "cta_url",
-        parameters: {
-          display_text: "📘 قاعدة المعرفة",
-          url: KNOWLEDGE_LINK
+    const payload = {
+      messaging_product: "whatsapp",
+      to: fromNumber,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: welcomeText },
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: "contact_support",
+                title: "🧑‍💼 تواصل مع الدعم"
+              }
+            }
+          ]
         }
       }
-    });
+    };
 
-    // 🧑‍💼 زر الدعم (Reply Button)
-    await sendWhatsAppMessage(fromNumber, welcomeMessage, {
-      type: "button",
-      body: { text: welcomeMessage },
-      action: {
-        buttons: [
-          {
-            type: "reply",
-            reply: {
-              id: "contact_support",
-              title: "🧑‍💼 تواصل مع الدعم"
-            }
-          }
-        ]
-      }
-    });
-
+    await sendWhatsAppMessage(fromNumber, payload);
     userData.greeted = true;
     return;
   }
 
   // ====================================
-  // ضغط زر "تواصل مع الدعم"
+  // تفعيل الدعم
   // ====================================
-  if (messageText === "🧑‍💼 تواصل مع الدعم" || messageText === "تواصل مع الدعم") {
+  if (messageText === "🧑‍💼 تواصل مع الدعم") {
     if (!userData.ticketId) {
       try {
         const zammadResponse = await axios.post(
@@ -135,7 +123,7 @@ app.post("/webhook", async (req, res) => {
             title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
             group: "Users",
             article: {
-              body: "بدء تواصل الدعم",
+              body: "بدء تواصل الدعم عبر واتساب",
               type: "note",
               internal: false
             },
@@ -151,7 +139,6 @@ app.post("/webhook", async (req, res) => {
 
         userData.ticketId = zammadResponse.data.id;
         userData.supportActivated = true;
-        console.log("Ticket created:", zammadResponse.data);
       } catch (err) {
         console.error("Zammad ticket error:", err.response?.data || err.message);
       }
@@ -162,7 +149,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // أي رسالة بعد تفعيل الدعم تتحول لتذكرة
+  // تحويل الرسائل إلى التذكرة
   // ====================================
   if (userData.supportActivated && userData.ticketId && messageText) {
     try {
@@ -181,8 +168,6 @@ app.post("/webhook", async (req, res) => {
           }
         }
       );
-
-      console.log(`Message appended to ticket ${userData.ticketId}`);
     } catch (err) {
       console.error("Zammad append error:", err.response?.data || err.message);
     }
@@ -190,14 +175,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ====================================
-// اختبار السيرفر
-// ====================================
 app.get("/", (req, res) => {
   res.send("WhatsApp Webhook is running ✅");
 });
 
-// ====================================
-// تشغيل السيرفر
-// ====================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
