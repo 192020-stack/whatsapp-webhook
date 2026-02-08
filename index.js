@@ -76,13 +76,14 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // رسالة الترحيب (زر Knowledge يفتح الرابط مباشرة + زر Support reply)
+  // رسالة الترحيب (زر Knowledge CTA + زر Support reply)
   // ====================================
   if (!userData.greeted) {
     const text =
       `مرحبًا ${fromName} 👋\n\n` +
       `كيف نقدر نساعدك؟ اختر أحد الخيارات 👇`;
 
+    // زر Knowledge الآن CTA URL
     await sendWhatsApp({
       messaging_product: "whatsapp",
       to: fromNumber,
@@ -93,11 +94,6 @@ app.post("/webhook", async (req, res) => {
         action: {
           buttons: [
             {
-              type: "url",
-              url: KNOWLEDGE_LINK,
-              title: "📘 قاعدة المعرفة"
-            },
-            {
               type: "reply",
               reply: {
                 id: "support",
@@ -105,6 +101,24 @@ app.post("/webhook", async (req, res) => {
               }
             }
           ]
+        }
+      }
+    });
+
+    // رسالة CTA Knowledge منفصلة
+    await sendWhatsApp({
+      messaging_product: "whatsapp",
+      to: fromNumber,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: { text: "📘 اضغط الزر بالأسفل لفتح قاعدة المعرفة مباشرة" },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: "فتح قاعدة المعرفة",
+            url: KNOWLEDGE_LINK
+          }
         }
       }
     });
