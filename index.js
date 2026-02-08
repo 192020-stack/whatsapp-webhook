@@ -1,63 +1,77 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
+import express from 'express';
+import axios from 'axios';
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-// صفحة اختبار للتأكد أن السيرفر شغال
-app.get("/", (req, res) => {
-  res.send("WhatsApp Webhook is running ✅");
-});
+// ===============================
+// إعدادات Zammad
+// ===============================
+const ZAMMAD_BASE_URL = 'http://102.203.200.112';
+const ZAMMAD_TOKEN =
+  'alnNgMod5eZzSlzlsRH2EpeIToanaof3LmcfMPTFMuk6ILXa_jd6RaVWWc1n7S1P';
 
-// التحقق من Meta (Webhook verification)
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mysecret123";
-
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified successfully");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
-
-// استقبال رسائل واتساب
-app.post("/webhook", async (req, res) => {
-  console.log("Incoming message:");
-  console.log(JSON.stringify(req.body, null, 2));
-
-  // استخراج نص الرسالة من البنية
-  const message = req.body.entry[0].changes[0].value.messages[0].text.body;
-
+// ===============================
+// Webhook endpoint
+// ===============================
+app.post('/webhook', async (req, res) => {
   try {
-    // إرسال إلى زامات باستخدام التوكن
-    await axios.post('http://102.203.200.112/api/v1/tickets', {
-      title: 'WhatsApp Ticket',
-      article: {
-        body: message,
-        type: 'note'
+    console.log('Incoming webhook:', JSON.stringify(req.body, null, 2));
+
+    // مثال نص الرسالة (عدّل حسب WhatsApp payload لاحقًا)
+    const messageText =
+      req.body?.message || 'عندي مشكلة في الكمبيوتر';
+
+    // إنشاء Ticket في Zammad
+    const response = await axios.post(
+      `${ZAMMAD_BASE_URL}/api/v1/tickets`,
+      {
+        title: 'WhatsApp Ticket',
+        group_id: 1, // تأكد أن group_id موجود
+        article: {
+          body: messageText,
+          type: 'note'
+        }
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          // ✅ الصيغة الصحيحة فقط
+          'Authorization': `Token token=${ZAMMAD_TOKEN}`
+        }
       }
-    }, {
-      headers: {
-        'Authorization': `Bearer alnNgMod5eZzSlzlsRH2EpeIToanaof3LmcfMPTFMuk6ILXa_jd6RaVWWc1n7S1P`,
-        'Content-Type': 'application/json'
-      }
+    );
+
+    console.log('Zammad response:', response.data);
+
+    res.status(200).json({
+      success: true,
+      ticket_id: response.data.id
+    });
+  } catch (error) {
+    console.error('Zammad error:', {
+      status: error.response?.status,
+      data: error.response?.data
     });
 
-    res.sendStatus(200);
-  } catch (error) {
-    console.error('Error sending to Zammad:', error);
-    res.sendStatus(500);
+    res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message
+    });
   }
 });
 
-// تشغيل السيرفر
-const PORT = process.env.PORT || 3000;
+// ===============================
+// Health check
+// ===============================
+app.get('/', (req, res) => {
+  res.send('WhatsApp → Zammad webhook is running ✅');
+});
+
+// ===============================
+// تشغيل السيرفر (Render compatible)
+// ===============================
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
