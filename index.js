@@ -1,68 +1,96 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
-const fs = require("fs");
 
 const app = express();
 app.use(bodyParser.json());
 
-const ZAMMAD_BASE_URL = "http://102.203.200.112"; // ضع رابط Zammad الخاص بك
-const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
-const WHATSAPP_TOKEN = "YOUR_WHATSAPP_TOKEN";
-const PHONE_NUMBER_ID = "1004684596056367";
+// =======================
+// إعدادات
+// =======================
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mysecret123";
+const ZAMMAD_TOKEN = process.env.ZAMMAD_TOKEN || "YOUR_ZAMMAD_AGENT_TOKEN";
+const ZAMMAD_BASE_URL = process.env.ZAMMAD_BASE_URL || "http://102.203.200.112";
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "YOUR_WHATSAPP_ACCESS_TOKEN";
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "YOUR_PHONE_NUMBER_ID";
 
-// ملف تخزين تذاكر اليوم
-const TICKETS_FILE = "./tickets.json";
+// =======================
+// قاعدة بيانات مؤقتة لتخزين آخر رسالة لكل رقم
+// =======================
+const userLastMessage = new Map(); // Map<phone_number, { date: Date, ticketId: number }>
 
-// قراءة بيانات التذاكر المخزنة
-function readTickets() {
-  if (!fs.existsSync(TICKETS_FILE)) return {};
-  return JSON.parse(fs.readFileSync(TICKETS_FILE));
+// =======================
+// مساعدة: التحقق من نفس اليوم
+// =======================
+function isSameDay(d1, d2) {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
 }
 
-// تحديث بيانات التذاكر
-function saveTickets(data) {
-  fs.writeFileSync(TICKETS_FILE, JSON.stringify(data, null, 2));
-}
-
-// صفحة اختبار
+// =======================
+// صفحة اختبار السيرفر
+// =======================
 app.get("/", (req, res) => {
-  res.send("WhatsApp Webhook running ✅");
+  res.send("WhatsApp Webhook is running ✅");
 });
 
+// =======================
+// التحقق من Meta Webhook
+// =======================
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified successfully");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+// =======================
 // استقبال رسائل واتساب
+// =======================
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const messageObj = change?.value?.messages?.[0];
-    const fromNumber = messageObj?.from;
-    const messageText = messageObj?.text?.body;
-    const fromName = change?.value?.contacts?.[0]?.profile?.name || "";
 
-    if (!messageObj || messageObj.type !== "text") return res.sendStatus(200);
+    if (!messageObj || messageObj.type !== "text") {
+      return res.sendStatus(200);
+    }
 
-    const tickets = readTickets();
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const fromNumber = messageObj.from;
+    const messageText = messageObj.text.body;
 
-    let ticketId;
+    const now = new Date();
+    let ticketId = null;
 
-    if (tickets[fromNumber] && tickets[fromNumber].date === today) {
-      // نفس اليوم، استخدم نفس التيكت
-      ticketId = tickets[fromNumber].ticket_id;
-    } else {
-      // إنشاء تيكت جديد
+    // تحقق إذا عنده تذكرة اليوم
+    const last = userLastMessage.get(fromNumber);
+    if (last && isSameDay(new Date(last.date), now)) {
+      ticketId = last.ticketId; // استخدم نفس التيكت
+    }
+
+    // إنشاء Ticket جديد إذا لم يكن موجود اليوم
+    if (!ticketId) {
       const zammadResponse = await axios.post(
         `${ZAMMAD_BASE_URL}/api/v1/tickets`,
         {
-          title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
+          title: `WhatsApp Ticket - ${fromNumber}`,
           group: "Users",
           article: {
             body: messageText,
             type: "note",
             internal: false,
           },
-          customer_id: 1, 
+          customer_id: 1, // رقم العميل في Zammad
         },
         {
           headers: {
@@ -73,33 +101,9 @@ app.post("/webhook", async (req, res) => {
       );
 
       ticketId = zammadResponse.data.id;
-      tickets[fromNumber] = { ticket_id: ticketId, date: today };
-      saveTickets(tickets);
-
-      // إرسال رسالة ترحيبية أول مرة
-      const welcomeMessage = `
-مرحبًا ${fromName} 👋
-شكرًا لتواصلك معنا. يمكنك الاطلاع على مركز المعرفة هنا: https://knowledge.example.com
-إذا رغبت بالتواصل مع الدعم مباشرة اضغط على "تواصل مع الدعم"
-`;
-      await axios.post(
-        `https://graph.facebook.com/v16.0/${PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: fromNumber,
-          text: { body: welcomeMessage },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-    }
-
-    // إضافة رسالة جديدة للتيكت (حتى لو لم تكن أول رسالة)
-    if (ticketId) {
+      userLastMessage.set(fromNumber, { date: now, ticketId });
+    } else {
+      // إضافة رسالة جديدة على نفس التيكت
       await axios.post(
         `${ZAMMAD_BASE_URL}/api/v1/tickets/${ticketId}/articles`,
         {
@@ -116,6 +120,28 @@ app.post("/webhook", async (req, res) => {
       );
     }
 
+    // =======================
+    // الرد الآلي لأول رسالة اليوم
+    // =======================
+    if (!last || !isSameDay(new Date(last.date), now)) {
+      await axios.post(
+        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to: fromNumber,
+          text: {
+            body: `مرحباً! شكراً لتواصلك معنا.\n🔹 مركز المعرفة: https://example.com/knowledge\n🔹 إذا أردت التواصل مع الدعم، أرسل أي رسالة وسيتم الرد عليك مباشرة.`
+          },
+        },
+        {
+          headers: {
+            "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+    }
+
     res.sendStatus(200);
   } catch (error) {
     console.error("Error processing webhook:", error.response?.data || error.message);
@@ -123,6 +149,9 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// =======================
+// تشغيل السيرفر
+// =======================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
