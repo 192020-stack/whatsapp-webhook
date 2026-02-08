@@ -16,37 +16,27 @@ const WHATSAPP_PHONE_ID = "1004684596056367";
 // ====================================
 // قاعدة بيانات مؤقتة لتخزين آخر تذكرة لكل رقم
 // ====================================
-const userTickets = {}; // { "phoneNumber": { ticketId, date, contactedSupport } }
+const userTickets = {}; // { "phoneNumber": { ticketId, date } }
 
 // ====================================
 // دالة لإرسال رسالة WhatsApp
 // ====================================
 async function sendWhatsAppMessage(to, message, buttons = null) {
   try {
-    let payload;
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: message },
+    };
 
+    // إذا فيه أزرار
     if (buttons) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: message },
-          action: {
-            buttons: buttons.map((b) => {
-              if (b.type === "reply") return { type: "reply", reply: b.reply };
-              if (b.type === "url") return { type: "url", url: b.url, title: b.title };
-            }),
-          },
-        },
-      };
-    } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: message },
+      payload.type = "interactive";
+      payload.interactive = {
+        type: "button",
+        body: { text: message },
+        action: { buttons },
       };
     }
 
@@ -138,28 +128,38 @@ app.post("/webhook", async (req, res) => {
   const fromNumber = messageObj.from;
   const contactName = change?.value?.contacts?.[0]?.profile?.name || "مستخدم";
 
+  // ====================================
+  // تحقق إذا فيه تذكرة اليوم
+  // ====================================
   const today = new Date().toISOString().split("T")[0];
   let ticketId;
 
-  // تحقق من وجود تذكرة اليوم
-  if (userTickets[fromNumber]?.date === today && userTickets[fromNumber]?.contactedSupport) {
+  if (userTickets[fromNumber]?.date === today) {
+    // التذكرة موجودة اليوم
     ticketId = userTickets[fromNumber].ticketId;
     await appendToZammadTicket(ticketId, messageText);
   } else {
-    // أول رسالة اليوم أو لم يتم التواصل مع الدعم بعد
-    const welcomeMessage = `مرحبًا ${contactName} 👋\n\nيمكنك تصفح حلولنا هنا أو الضغط على زر التواصل مع الدعم إذا لم تجد إجابة لسؤالك.`;
+    // أول رسالة اليوم: نرسل رد ترحيبي أولاً
+    const welcomeMessage = `مرحبًا ${contactName} 👋
+
+يمكنك تصفح حلولنا هنا مباشرة:
+${KNOWLEDGE_LINK}
+
+أو اضغط على زر "تواصل مع الدعم" إذا لم تجد إجابة لسؤالك.`;
+
     const welcomeButtons = [
-      { type: "url", url: KNOWLEDGE_LINK, title: "زيارة المعرفة" },
       { type: "reply", reply: { id: "contact_support", title: "تواصل مع الدعم" } },
     ];
+
     await sendWhatsAppMessage(fromNumber, welcomeMessage, welcomeButtons);
 
-    // تحقق من الضغط على زر التواصل مع الدعم
-    const isSupport = messageText === "تواصل مع الدعم" || messageObj.button?.payload === "contact_support";
-
-    if (isSupport) {
+    // تحقق إذا ضغط على زر التواصل مع الدعم
+    if (
+      messageText === "تواصل مع الدعم" ||
+      messageObj.button?.payload === "contact_support"
+    ) {
       ticketId = await createZammadTicket(fromNumber, messageText);
-      userTickets[fromNumber] = { ticketId, date: today, contactedSupport: true };
+      userTickets[fromNumber] = { ticketId, date: today };
     }
   }
 });
