@@ -10,7 +10,7 @@ app.use(express.json());
 const ZAMMAD_BASE_URL = "http://102.203.200.112"; // رابط Zammad
 const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8"; // Token Agent
 const KNOWLEDGE_LINK = "http://102.203.200.112/#knowledge_base/1/locale/ar";
-const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
+const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD"; // System User Token دائم
 const WHATSAPP_PHONE_ID = "1004684596056367";
 
 // ====================================
@@ -23,7 +23,7 @@ const userTickets = {}; // { "phoneNumber": { ticketId, date } }
 // ====================================
 async function sendWhatsAppMessage(to, message, buttons = null) {
   try {
-    const payload = {
+    let payload = {
       messaging_product: "whatsapp",
       to,
       type: "text",
@@ -32,11 +32,15 @@ async function sendWhatsAppMessage(to, message, buttons = null) {
 
     // إذا فيه أزرار
     if (buttons) {
-      payload.type = "interactive";
-      payload.interactive = {
-        type: "button",
-        body: { text: message },
-        action: { buttons },
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: message },
+          action: { buttons },
+        },
       };
     }
 
@@ -128,29 +132,34 @@ app.post("/webhook", async (req, res) => {
   const fromNumber = messageObj.from;
   const contactName = change?.value?.contacts?.[0]?.profile?.name || "مستخدم";
 
-  // ====================================
-  // تحقق إذا فيه تذكرة اليوم
-  // ====================================
   const today = new Date().toISOString().split("T")[0];
-  let ticketId;
+  let ticketId = userTickets[fromNumber]?.ticketId;
 
-  if (userTickets[fromNumber]?.date === today) {
-    // التذكرة موجودة اليوم
-    ticketId = userTickets[fromNumber].ticketId;
-    await appendToZammadTicket(ticketId, messageText);
-  } else {
-    // أول رسالة اليوم: نرسل رد ترحيبي أولاً
-    const welcomeMessage = `مرحبًا ${contactName} 👋\n\nيمكنك تصفح حلولنا هنا: ${KNOWLEDGE_LINK}\nأو الضغط على زر التواصل مع الدعم إذا لم تجد إجابة لسؤالك.`;
-    const buttons = [
-      { type: "reply", reply: { id: "contact_support", title: "تواصل مع الدعم" } },
-    ];
-    await sendWhatsAppMessage(fromNumber, welcomeMessage, buttons);
-
-    // إذا ضغط على زر التواصل مع الدعم، نفتح تذكرة جديدة
-    if (messageText === "تواصل مع الدعم" || messageObj.button?.payload === "contact_support") {
-      ticketId = await createZammadTicket(fromNumber, messageText);
+  // ====================================
+  // إذا المستخدم ضغط زر التواصل مع الدعم أو رسالته نص "تواصل مع الدعم"
+  // ====================================
+  if (messageText === "تواصل مع الدعم" || messageObj.button?.payload === "contact_support") {
+    if (!ticketId) {
+      // نفتح تذكرة جديدة
+      ticketId = await createZammadTicket(fromNumber, "بدأ التواصل مع الدعم");
       userTickets[fromNumber] = { ticketId, date: today };
     }
+    // أرسل رسالة تأكيد تلقائية
+    await sendWhatsAppMessage(
+      fromNumber,
+      "تم فتح تذكرة لدعمك الفني. يمكنك متابعة رسائلك هنا وسيتم الرد عليك من الفريق."
+    );
+  } else if (ticketId && userTickets[fromNumber].date === today) {
+    // أي رسالة أخرى اليوم تضاف للتذكرة نفسها
+    await appendToZammadTicket(ticketId, messageText);
+  } else {
+    // أول رسالة اليوم بدون زر دعم: نرسل الرد الترحيبي مع الأزرار
+    const welcomeButtons = [
+      { type: "url", url: KNOWLEDGE_LINK, title: "زيارة المعرفة" },
+      { type: "reply", reply: { id: "contact_support", title: "تواصل مع الدعم" } },
+    ];
+    const welcomeMessage = `مرحبًا ${contactName} 👋\nاختر أحد الخيارات:`;
+    await sendWhatsAppMessage(fromNumber, welcomeMessage, welcomeButtons);
   }
 });
 
