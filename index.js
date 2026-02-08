@@ -36,7 +36,7 @@ app.post("/webhook", async (req, res) => {
 
   try {
     // إرسال إلى زامات باستخدام التوكن
-    await axios.post('http://102.203.200.112/', {
+    await axios.post('http://102.203.200.112/#ticket/create/id/', {
       title: 'WhatsApp Ticket',
       article: {
         body: message,
