@@ -88,26 +88,30 @@ app.post("/webhook", async (req, res) => {
   // ====================================
   // ضغط زر "تواصل مع الدعم"
   // ====================================
-if (!userData.greeted) {
-  const welcomeMessage = `مرحبًا ${fromName} 👋\n\nيمكنك تصفح حلولنا مباشرة عبر هذا الزر:`;
-  
-  // زر URL يفتح الرابط مباشرة عند الضغط
-  const buttons = [
-    {
-      type: "url",
-      url: {
-        title: "زيارة قاعدة المعرفة",
-        url: KNOWLEDGE_LINK  // هذا هو الرابط الذي تريد فتحه
+  if (messageText === "تواصل مع الدعم") {
+    if (!userData.ticketId) {
+      try {
+        const zammadResponse = await axios.post(
+          `${ZAMMAD_BASE_URL}/api/v1/tickets`,
+          {
+            title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
+            group: "Users",
+            article: { body: "بدء تواصل الدعم", type: "note", internal: false },
+            customer_id: 1,
+          },
+          { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+        );
+        userData.ticketId = zammadResponse.data.id;
+        userData.supportActivated = true;
+        console.log("Ticket created:", zammadResponse.data);
+      } catch (err) {
+        console.error("Zammad ticket error:", err.response?.data || err.message);
       }
+    } else {
+      userData.supportActivated = true;
     }
-  ];
-
-  await sendWhatsAppMessage(fromNumber, welcomeMessage, buttons);
-  userData.greeted = true;
-  return;
-}
-
-
+    return;
+  }
 
   // ====================================
   // أي رسالة بعد تفعيل الدعم تتحول لتذكرة
