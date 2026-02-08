@@ -21,7 +21,7 @@ const userTickets = {};
 // ====================================
 // إرسال رسالة WhatsApp
 // ====================================
-async function sendWhatsAppMessage(to, payload) {
+async function sendWhatsApp(payload) {
   try {
     await axios.post(
       `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
@@ -48,7 +48,6 @@ app.post("/webhook", async (req, res) => {
   const change = entry?.changes?.[0];
   const messageObj = change?.value?.messages?.[0];
   const contactObj = change?.value?.contacts?.[0];
-
   if (!messageObj) return;
 
   const fromNumber = messageObj.from;
@@ -65,56 +64,79 @@ app.post("/webhook", async (req, res) => {
   const userData = userTickets[fromNumber];
 
   let messageText = "";
-  if (messageObj.type === "text") messageText = messageObj.text.body;
-  else if (
+  let buttonId = "";
+
+  if (messageObj.type === "text") {
+    messageText = messageObj.text.body;
+  } else if (
     messageObj.type === "interactive" &&
     messageObj.interactive.type === "button_reply"
   ) {
-    messageText = messageObj.interactive.button_reply.title;
+    buttonId = messageObj.interactive.button_reply.id;
   }
 
   // ====================================
-  // رسالة ترحيب واحدة فقط (زر + رابط)
+  // رسالة الترحيب (رسالة وحدة + أزرار)
   // ====================================
   if (!userData.greeted) {
-    const welcomeText =
+    const text =
       `مرحبًا ${fromName} 👋\n\n` +
-      `اختر الخدمة اللي تناسبك 👇\n\n` +
-      `📘 *قاعدة المعرفة*\n` +
-      `حلول للمشاكل الشائعة:\n` +
-      `${KNOWLEDGE_LINK}\n\n` +
-      `🧑‍💼 أو اضغط الزر أدناه للتواصل مع الدعم`;
+      `كيف نقدر نساعدك؟ اختر أحد الخيارات 👇`;
 
-    const payload = {
+    await sendWhatsApp({
       messaging_product: "whatsapp",
       to: fromNumber,
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: welcomeText },
+        body: { text },
         action: {
           buttons: [
             {
               type: "reply",
               reply: {
-                id: "contact_support",
+                id: "knowledge",
+                title: "📘 قاعدة المعرفة"
+              }
+            },
+            {
+              type: "reply",
+              reply: {
+                id: "support",
                 title: "🧑‍💼 تواصل مع الدعم"
               }
             }
           ]
         }
       }
-    };
+    });
 
-    await sendWhatsAppMessage(fromNumber, payload);
     userData.greeted = true;
     return;
   }
 
   // ====================================
-  // تفعيل الدعم
+  // زر قاعدة المعرفة
   // ====================================
-  if (messageText === "🧑‍💼 تواصل مع الدعم") {
+  if (buttonId === "knowledge") {
+    await sendWhatsApp({
+      messaging_product: "whatsapp",
+      to: fromNumber,
+      type: "text",
+      text: {
+        body:
+          `📘 *قاعدة المعرفة*\n\n` +
+          `تقدر تلقى حلول للمشاكل الشائعة من هنا 👇\n\n` +
+          `${KNOWLEDGE_LINK}`
+      }
+    });
+    return;
+  }
+
+  // ====================================
+  // زر تواصل مع الدعم
+  // ====================================
+  if (buttonId === "support") {
     if (!userData.ticketId) {
       try {
         const zammadResponse = await axios.post(
@@ -123,7 +145,7 @@ app.post("/webhook", async (req, res) => {
             title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
             group: "Users",
             article: {
-              body: "بدء تواصل الدعم عبر واتساب",
+              body: "بدء تواصل الدعم",
               type: "note",
               internal: false
             },
@@ -149,7 +171,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // تحويل الرسائل إلى التذكرة
+  // رسائل الدعم → Zammad
   // ====================================
   if (userData.supportActivated && userData.ticketId && messageText) {
     try {
