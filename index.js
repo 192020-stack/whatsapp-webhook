@@ -78,13 +78,18 @@ app.post("/webhook", async (req, res) => {
   // إرسال رسالة الترحيب مرة واحدة مع رابط Knowledge Base أزرق
   // ====================================
   if (!userData.greeted) {
-    const welcomeMessage = 
-    `مرحبًا ${fromName} 👋\n\n` +
-    `📘 تصفح حلولنا هنا:\n` +
-    `${KNOWLEDGE_LINK}\n\n` +
-    `أو اضغط على زر "تواصل مع الدعم" إذا لم تجد إجابة لسؤالك.`;
+ const welcomeMessage = `مرحبًا ${fromName} 👋\n\nيمكنك تصفح حلولنا عبر Knowledge Base بالضغط على الزر أدناه أو التواصل مع الدعم إذا لم تجد إجابة لسؤالك.`;
 
-  const buttons = [{ type: "reply", reply: { id: "contact_support", title: "تواصل مع الدعم" } }];
+  const buttons = [
+    {
+      type: "url",
+      url: { id: "knowledge_base", title: "📘 تصفح المعرفة", url: KNOWLEDGE_LINK }
+    },
+    {
+      type: "reply",
+      reply: { id: "contact_support", title: "تواصل مع الدعم" }
+    }
+  ];
 
   await sendWhatsAppMessage(fromNumber, welcomeMessage, buttons);
   userData.greeted = true;
