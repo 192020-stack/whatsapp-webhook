@@ -7,8 +7,8 @@ app.use(express.json());
 // ====================================
 // إعدادات Zammad و WhatsApp
 // ====================================
-const ZAMMAD_BASE_URL = "http://102.203.200.112"; 
-const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8"; 
+const ZAMMAD_BASE_URL = "http://102.203.200.112";
+const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
 const KNOWLEDGE_LINK = "http://102.203.200.112/#knowledge_base/1/locale/ar";
 const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
 const WHATSAPP_PHONE_ID = "1004684596056367";
@@ -16,28 +16,30 @@ const WHATSAPP_PHONE_ID = "1004684596056367";
 // ====================================
 // قاعدة بيانات مؤقتة لكل مستخدم
 // ====================================
-const userTickets = {}; 
+const userTickets = {};
 
 // ====================================
-// دالة لإرسال رسالة WhatsApp
+// دالة إرسال WhatsApp (تدعم كل أنواع Interactive)
 // ====================================
-async function sendWhatsAppMessage(to, message, buttons = null) {
+async function sendWhatsAppMessage(to, message, interactive = null) {
   try {
-    const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: message } };
-
-    if (buttons) {
-      payload.type = "interactive";
-      payload.interactive = {
-        type: "button",
-        body: { text: message },
-        action: { buttons },
-      };
-    }
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: interactive ? "interactive" : "text",
+      text: interactive ? undefined : { body: message },
+      interactive: interactive || undefined
+    };
 
     await axios.post(
       `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
       payload,
-      { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
     );
   } catch (error) {
     console.error("WhatsApp send error:", error.response?.data || error.message);
@@ -61,55 +63,70 @@ app.post("/webhook", async (req, res) => {
   const fromNumber = messageObj.from;
   const fromName = contactObj?.profile?.name || "مستخدم";
 
-  // تهيئة بيانات المستخدم
   if (!userTickets[fromNumber]) {
-    userTickets[fromNumber] = { ticketId: null, supportActivated: false, greeted: false };
+    userTickets[fromNumber] = {
+      ticketId: null,
+      supportActivated: false,
+      greeted: false
+    };
   }
+
   const userData = userTickets[fromNumber];
 
-  // قراءة نص الرسالة
   let messageText = "";
   if (messageObj.type === "text") messageText = messageObj.text.body;
   else if (messageObj.type === "interactive" && messageObj.interactive.type === "button_reply") {
     messageText = messageObj.interactive.button_reply.title;
-  } else return;
+  }
 
   // ====================================
-  // إرسال رسالة الترحيب مرة واحدة مع رابط Knowledge Base أزرق
+  // رسالة الترحيب (Knowledge + Support)
   // ====================================
   if (!userData.greeted) {
     const welcomeMessage =
-    `مرحبًا ${fromName} 👋\n\n` +
-    `اختر الخدمة اللي تناسبك 👇\n\n` +
-    `📘 قاعدة المعرفة: حلول للمشاكل الشائعة\n` +
-    `🧑‍💼 الدعم: التحدث مع فريق الدعم`;
+      `مرحبًا ${fromName} 👋\n\n` +
+      `اختر الخدمة اللي تناسبك 👇\n\n` +
+      `📘 قاعدة المعرفة: حلول للمشاكل الشائعة\n` +
+      `🧑‍💼 الدعم: التحدث مع فريق الدعم`;
 
-  const buttons = [
-    {
-      type: "url",
-      url: {
-        title: "📘 قاعدة المعرفة",
-        url: KNOWLEDGE_LINK
+    // 📘 زر قاعدة المعرفة (CTA URL)
+    await sendWhatsAppMessage(fromNumber, welcomeMessage, {
+      type: "cta_url",
+      body: { text: welcomeMessage },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: "📘 قاعدة المعرفة",
+          url: KNOWLEDGE_LINK
+        }
       }
-    },
-    {
-      type: "reply",
-      reply: {
-        id: "contact_support",
-        title: "🧑‍💼 تواصل مع الدعم"
-      }
-    }
-  ];
+    });
 
-  await sendWhatsAppMessage(fromNumber, welcomeMessage, buttons);
-  userData.greeted = true;
+    // 🧑‍💼 زر الدعم (Reply Button)
+    await sendWhatsAppMessage(fromNumber, welcomeMessage, {
+      type: "button",
+      body: { text: welcomeMessage },
+      action: {
+        buttons: [
+          {
+            type: "reply",
+            reply: {
+              id: "contact_support",
+              title: "🧑‍💼 تواصل مع الدعم"
+            }
+          }
+        ]
+      }
+    });
+
+    userData.greeted = true;
     return;
   }
 
   // ====================================
   // ضغط زر "تواصل مع الدعم"
   // ====================================
-  if (messageText === "تواصل مع الدعم") {
+  if (messageText === "🧑‍💼 تواصل مع الدعم" || messageText === "تواصل مع الدعم") {
     if (!userData.ticketId) {
       try {
         const zammadResponse = await axios.post(
@@ -117,11 +134,21 @@ app.post("/webhook", async (req, res) => {
           {
             title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
             group: "Users",
-            article: { body: "بدء تواصل الدعم", type: "note", internal: false },
-            customer_id: 1,
+            article: {
+              body: "بدء تواصل الدعم",
+              type: "note",
+              internal: false
+            },
+            customer_id: 1
           },
-          { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+          {
+            headers: {
+              Authorization: `Token token=${ZAMMAD_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          }
         );
+
         userData.ticketId = zammadResponse.data.id;
         userData.supportActivated = true;
         console.log("Ticket created:", zammadResponse.data);
@@ -137,18 +164,28 @@ app.post("/webhook", async (req, res) => {
   // ====================================
   // أي رسالة بعد تفعيل الدعم تتحول لتذكرة
   // ====================================
-  if (userData.supportActivated && userData.ticketId) {
+  if (userData.supportActivated && userData.ticketId && messageText) {
     try {
       await axios.post(
         `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-        { ticket_id: userData.ticketId, body: messageText, type: "note", internal: false },
-        { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+        {
+          ticket_id: userData.ticketId,
+          body: messageText,
+          type: "note",
+          internal: false
+        },
+        {
+          headers: {
+            Authorization: `Token token=${ZAMMAD_TOKEN}`,
+            "Content-Type": "application/json"
+          }
+        }
       );
+
       console.log(`Message appended to ticket ${userData.ticketId}`);
     } catch (err) {
       console.error("Zammad append error:", err.response?.data || err.message);
     }
-    return;
   }
 });
 
