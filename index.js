@@ -21,45 +21,17 @@ const userTickets = {};
 // ====================================
 // دالة لإرسال رسالة WhatsApp
 // ====================================
-async function sendWhatsAppMessage(to, message, options = {}) {
+async function sendWhatsAppMessage(to, message, buttons = null) {
   try {
-    let payload;
+    const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: message } };
 
-    if (options.type === "reply") {
-      // زر reply
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: message },
-          action: {
-            buttons: [
-              { type: "reply", reply: { id: options.replyId, title: options.replyTitle } }
-            ]
-          }
-        }
+    if (buttons) {
+      payload.type = "interactive";
+      payload.interactive = {
+        type: "button",
+        body: { text: message },
+        action: { buttons },
       };
-    } else if (options.type === "url") {
-      // زر URL
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: message },
-          action: {
-            buttons: [
-              { type: "url", url: { title: options.urlTitle, url: options.url } }
-            ]
-          }
-        }
-      };
-    } else {
-      // رسالة نصية عادية
-      payload = { messaging_product: "whatsapp", to, type: "text", text: { body: message } };
     }
 
     await axios.post(
@@ -103,25 +75,12 @@ app.post("/webhook", async (req, res) => {
   } else return;
 
   // ====================================
-  // إرسال رسالة الترحيب مرة واحدة مع زر reply + زر URL في رسالة ثانية
+  // إرسال رسالة الترحيب مرة واحدة مع رابط Knowledge Base أزرق
   // ====================================
   if (!userData.greeted) {
-    // رسالة الترحيب مع زر reply
-    const welcomeText = `مرحبًا ${fromName} 👋\n\nإذا لم تجد إجابة لسؤالك، اضغط على زر "تواصل مع الدعم".`;
-    await sendWhatsAppMessage(fromNumber, welcomeText, {
-      type: "reply",
-      replyId: "contact_support",
-      replyTitle: "تواصل مع الدعم"
-    });
-
-    // رسالة زر URL Knowledge Base
-    const kbText = "📘 تصفح حلولنا عبر Knowledge Base بالضغط على الزر أدناه:";
-    await sendWhatsAppMessage(fromNumber, kbText, {
-      type: "url",
-      urlTitle: "تصفح المعرفة",
-      url: KNOWLEDGE_LINK
-    });
-
+    const welcomeMessage = `مرحبًا ${fromName} 👋\n\nيمكنك تصفح حلولنا هنا: ${KNOWLEDGE_LINK}\nأو اضغط على زر "تواصل مع الدعم" إذا لم تجد إجابة لسؤالك.`;
+    const buttons = [{ type: "reply", reply: { id: "contact_support", title: "تواصل مع الدعم" } }];
+    await sendWhatsAppMessage(fromNumber, welcomeMessage, buttons);
     userData.greeted = true;
     return;
   }
