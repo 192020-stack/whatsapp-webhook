@@ -35,29 +35,23 @@ async function sendWhatsApp(payload) {
 }
 
 // ====================================
-// تحميل الميديا من WhatsApp Cloud API
+// تحميل ميديا من WhatsApp
 // ====================================
 async function downloadMedia(mediaId) {
   try {
-    // 1️⃣ احصل على رابط التنزيل
-    const mediaRes = await axios.get(`https://graph.facebook.com/v17.0/${mediaId}`, {
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
-    });
-
-    const mediaUrl = mediaRes.data.url;
-
-    // 2️⃣ احصل على البيانات
-    const fileRes = await axios.get(mediaUrl, {
+    const metaRes = await axios.get(
+      `https://graph.facebook.com/v17.0/${mediaId}`,
+      { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
+    );
+    const url = metaRes.data.url;
+    const mediaRes = await axios.get(url, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
       responseType: "arraybuffer"
     });
-
-    const mimeType = fileRes.headers["content-type"];
-    const base64Data = Buffer.from(fileRes.data, "binary").toString("base64");
-
-    return { mime_type: mimeType, data: base64Data };
-  } catch (e) {
-    console.error("Media download error:", e.response?.data || e.message);
+    const data = Buffer.from(mediaRes.data, "binary").toString("base64");
+    return { data, mime_type: metaRes.data.mime_type };
+  } catch (err) {
+    console.error("Media download error:", err.message);
     return null;
   }
 }
@@ -68,9 +62,8 @@ async function downloadMedia(mediaId) {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  const entry = req.body.entry?.[0]?.changes?.[0]?.value;
-  const msg = entry?.messages?.[0];
-  const contact = entry?.contacts?.[0];
+  const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const contact = req.body.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
   if (!msg) return;
 
   const from = msg.from;
@@ -79,6 +72,7 @@ app.post("/webhook", async (req, res) => {
   if (!users[from]) {
     users[from] = { greeted: false, ticketId: null, support: false };
   }
+
   const user = users[from];
   let replyId = "";
   let text = "";
@@ -97,10 +91,7 @@ app.post("/webhook", async (req, res) => {
       interactive: {
         type: "list",
         body: {
-          text:
-            `مرحبًا ${name} 👋\n\n` +
-            `أهلًا بك في *رقمنة للخدمات التقنية*\n` +
-            `كيف نقدر نساعدك؟ اختر من الخيارات 👇`
+          text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nكيف نقدر نساعدك؟ اختر من الخيارات 👇`
         },
         action: {
           button: "اختر",
@@ -131,10 +122,7 @@ app.post("/webhook", async (req, res) => {
       interactive: {
         type: "cta_url",
         body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة والمشاكل الشائعة" },
-        action: {
-          name: "cta_url",
-          parameters: { display_text: "فتح الأسئلة الشائعة", url: KNOWLEDGE_LINK }
-        }
+        action: { name: "cta_url", parameters: { display_text: "فتح الأسئلة الشائعة", url: KNOWLEDGE_LINK } }
       }
     });
     return;
@@ -151,18 +139,10 @@ app.post("/webhook", async (req, res) => {
           title: `WhatsApp - ${name} (${from})`,
           group: "Users",
           customer_id: 1,
-          article: {
-            body:
-              `تم بدء تواصل دعم عبر WhatsApp\n\n` +
-              `الاسم: ${name}\n` +
-              `الرقم: ${from}`,
-            type: "note",
-            internal: false
-          }
+          article: { body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`, type: "note", internal: false }
         },
         { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
       );
-
       user.ticketId = zammad.data.id;
       user.support = true;
     }
@@ -180,40 +160,35 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // رسائل الدعم → Zammad
+  // رسائل الدعم → Zammad (Text + Media)
   // ====================================
   if (user.support && user.ticketId) {
-    let articlePayload = {
-      ticket_id: user.ticketId,
-      type: "note",
-      internal: false
-    };
+    let articlePayload = { ticket_id: user.ticketId, body: text || "", type: "note", internal: false };
 
- if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
-  const mediaId = msg[msg.type].id;
-  const mediaData = await downloadMedia(mediaId);
-  if (mediaData) {
-    const extension = mediaData.mime_type.split("/")[1]; // jpg, png, mp4, ogg
-    articlePayload.body = `📎 ${msg.type} من المستخدم`;
-    articlePayload.attachment = [
-      {
-        data: mediaData.data,
-        mime_type: mediaData.mime_type,
-        name: `${msg.type}.${extension}`  // <-- مهم جدًا
+    // إذا كانت الميديا
+    if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
+      const mediaId = msg[msg.type].id;
+      const mediaData = await downloadMedia(mediaId);
+      if (mediaData) {
+        const extension = mediaData.mime_type.split("/")[1];
+        articlePayload.body = `📎 ${msg.type} من المستخدم`;
+        articlePayload.attachment = [
+          {
+            data: mediaData.data,
+            mime_type: mediaData.mime_type,
+            name: `${msg.type}.${extension}`
+          }
+        ];
+      } else {
+        articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
       }
-    ];
-  } else {
-    articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
-  }
-
-
-    } else {
-      articlePayload.body = "رسالة غير مدعومة";
     }
 
-    await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
-      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" }
-    });
+    await axios.post(
+      `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+      articlePayload,
+      { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+    );
   }
 });
 
