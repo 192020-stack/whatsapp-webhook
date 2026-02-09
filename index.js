@@ -237,30 +237,40 @@ app.post("/webhook", async (req, res) => {
       );
     }
 
-    if (media) {
-      await axios.post(
-        `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+
+if (media) {
+  const mimeType = media.mime.split(";")[0]; // remove codecs أو extra info
+  let ext = "file";
+  if (mimeType.startsWith("image/")) ext = "jpg";
+  else if (mimeType.startsWith("audio/")) ext = "ogg";
+  else if (mimeType.startsWith("video/")) ext = "mp4";
+  else if (mimeType === "application/pdf") ext = "pdf";
+
+  await axios.post(
+    `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+    {
+      ticket_id: user.ticketId,
+      body: `📎 مرفق من WhatsApp (${mediaType})`,
+      type: "note",
+      internal: false,
+      attachments: [
         {
-          ticket_id: user.ticketId,
-          body: `📎 مرفق من WhatsApp (${mediaType})`,
-          type: "note",
-          internal: false,
-          attachments: [
-            {
-              filename: `${mediaType}-${Date.now()}`,
-              mime_type: media.mime,
-              data: media.buffer.toString("base64")
-            }
-          ]
-        },
-        {
-          headers: {
-            Authorization: `Token token=${ZAMMAD_TOKEN}`,
-            "Content-Type": "application/json"
-          }
+          filename: `${mediaType}-${Date.now()}.${ext}`,
+          mime_type: mimeType,
+          data: media.buffer.toString("base64")
         }
-      );
+      ]
+    },
+    {
+      headers: {
+        Authorization: `Token token=${ZAMMAD_TOKEN}`,
+        "Content-Type": "application/json"
+      }
     }
+  );
+}
+
+
   }
 });
 
