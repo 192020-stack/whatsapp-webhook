@@ -10,6 +10,7 @@ app.use(express.json());
 const ZAMMAD_BASE_URL = "http://102.203.200.112";
 const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
 const KNOWLEDGE_LINK = "http://102.203.200.112/help/ar?preview_token=awTUB6dcksRTfDSveLu7YRcpuBoSNpthYlSKg4NHGGs30KAWLBchsPsrh6mgDFe-";
+
 const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
 const WHATSAPP_PHONE_ID = "1004684596056367";
 
@@ -34,7 +35,10 @@ async function sendWhatsApp(payload) {
       }
     );
   } catch (error) {
-    console.error("WhatsApp send error:", error.response?.data || error.message);
+    console.error(
+      "WhatsApp send error:",
+      error.response?.data || error.message
+    );
   }
 }
 
@@ -76,21 +80,41 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // رسالة الترحيب (زر Knowledge CTA + زر Support reply)
+  // الترحيب (Knowledge أولاً ثم الدعم)
   // ====================================
   if (!userData.greeted) {
-    const text =
-      `مرحبًا ${fromName} 👋\n\n` +
-      `كيف نقدر نساعدك؟ اختر أحد الخيارات 👇`;
+    // 1️⃣ رسالة Knowledge (CTA URL)
+    await sendWhatsApp({
+      messaging_product: "whatsapp",
+      to: fromNumber,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: {
+          text:
+            `مرحبًا ${fromName} 👋\n\n` +
+            `قبل ما تتواصل مع الدعم، ننصحك تطّلع على قاعدة المعرفة 👇`
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: "📘 فتح قاعدة المعرفة",
+            url: KNOWLEDGE_LINK
+          }
+        }
+      }
+    });
 
-    // زر Knowledge الآن CTA URL
+    // 2️⃣ رسالة زر الدعم
     await sendWhatsApp({
       messaging_product: "whatsapp",
       to: fromNumber,
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text },
+        body: {
+          text: "إذا ما لقيتش الحل، تقدر تتواصل مباشرة مع فريق الدعم 👇"
+        },
         action: {
           buttons: [
             {
@@ -101,24 +125,6 @@ app.post("/webhook", async (req, res) => {
               }
             }
           ]
-        }
-      }
-    });
-
-    // رسالة CTA Knowledge منفصلة
-    await sendWhatsApp({
-      messaging_product: "whatsapp",
-      to: fromNumber,
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        body: { text: "📘 اضغط الزر بالأسفل لفتح قاعدة المعرفة مباشرة" },
-        action: {
-          name: "cta_url",
-          parameters: {
-            display_text: "فتح قاعدة المعرفة",
-            url: KNOWLEDGE_LINK
-          }
         }
       }
     });
@@ -139,7 +145,7 @@ app.post("/webhook", async (req, res) => {
             title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
             group: "Users",
             article: {
-              body: "بدء تواصل الدعم",
+              body: "بدء تواصل من WhatsApp",
               type: "note",
               internal: false
             },
@@ -155,8 +161,19 @@ app.post("/webhook", async (req, res) => {
 
         userData.ticketId = zammadResponse.data.id;
         userData.supportActivated = true;
+
+        await sendWhatsApp({
+          messaging_product: "whatsapp",
+          to: fromNumber,
+          text: {
+            body: "✅ تم فتح تذكرة دعم، اكتب رسالتك الآن وسيتم تحويلها للدعم."
+          }
+        });
       } catch (err) {
-        console.error("Zammad ticket error:", err.response?.data || err.message);
+        console.error(
+          "Zammad ticket error:",
+          err.response?.data || err.message
+        );
       }
     } else {
       userData.supportActivated = true;
@@ -165,7 +182,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // رسائل الدعم → Zammad
+  // رسائل المستخدم → Zammad
   // ====================================
   if (userData.supportActivated && userData.ticketId && messageText) {
     try {
@@ -185,7 +202,10 @@ app.post("/webhook", async (req, res) => {
         }
       );
     } catch (err) {
-      console.error("Zammad append error:", err.response?.data || err.message);
+      console.error(
+        "Zammad append error:",
+        err.response?.data || err.message
+      );
     }
   }
 });
