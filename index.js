@@ -169,17 +169,18 @@ app.post("/webhook", async (req, res) => {
     if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
       const mediaId = msg[msg.type].id;
       const mediaData = await downloadMedia(mediaId);
-      if (mediaData) {
-        const extension = mediaData.mime_type.split("/")[1];
-        articlePayload.body = `📎 ${msg.type} من المستخدم`;
-        articlePayload.attachment = [
-          {
-            data: mediaData.data,
-            mime_type: mediaData.mime_type,
-            name: `${msg.type}.${extension}`
-          }
-        ];
-      } else {
+if (mediaData) {
+  const extension = mediaData.mime_type.split("/")[1];
+  articlePayload.body = `📎 ${msg.type} من المستخدم`;
+  articlePayload.attachments = [
+    {
+      data: mediaData.data,
+      mime_type: mediaData.mime_type,
+      name: `${msg.type}.${extension}`
+    }
+  ];
+}
+else {
         articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
       }
     }
