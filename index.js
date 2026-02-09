@@ -5,22 +5,18 @@ const app = express();
 app.use(express.json());
 
 // ====================================
-// إعدادات Zammad و WhatsApp
+// الإعدادات
 // ====================================
 const ZAMMAD_BASE_URL = "http://102.203.200.112";
-const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
-const KNOWLEDGE_LINK = "http://102.203.200.112/help/ar?preview_token=awTUB6dcksRTfDSveLu7YRcpuBoSNpthYlSKg4NHGGs30KAWLBchsPsrh6mgDFe-";
+const ZAMMAD_TOKEN = "PUT_ZAMMAD_TOKEN";
+const KNOWLEDGE_LINK = "http://102.203.200.112/help/ar";
 
-const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
+const WHATSAPP_TOKEN = "PUT_WHATSAPP_TOKEN";
 const WHATSAPP_PHONE_ID = "1004684596056367";
 
 // ====================================
-// قاعدة بيانات مؤقتة
-// ====================================
-const userTickets = {};
+const users = {};
 
-// ====================================
-// إرسال رسالة WhatsApp
 // ====================================
 async function sendWhatsApp(payload) {
   try {
@@ -34,11 +30,8 @@ async function sendWhatsApp(payload) {
         }
       }
     );
-  } catch (error) {
-    console.error(
-      "WhatsApp send error:",
-      error.response?.data || error.message
-    );
+  } catch (e) {
+    console.error("WhatsApp Error:", e.response?.data || e.message);
   }
 }
 
@@ -48,151 +41,113 @@ async function sendWhatsApp(payload) {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  const entry = req.body.entry?.[0];
-  const change = entry?.changes?.[0];
-  const messageObj = change?.value?.messages?.[0];
-  const contactObj = change?.value?.contacts?.[0];
-  if (!messageObj) return;
+  const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const contact = req.body.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
+  if (!msg) return;
 
-  const fromNumber = messageObj.from;
-  const fromName = contactObj?.profile?.name || "مستخدم";
+  const from = msg.from;
+  const name = contact?.profile?.name || "مستخدم";
 
-  if (!userTickets[fromNumber]) {
-    userTickets[fromNumber] = {
+  if (!users[from]) {
+    users[from] = {
+      greeted: false,
       ticketId: null,
-      supportActivated: false,
-      greeted: false
+      support: false
     };
   }
 
-  const userData = userTickets[fromNumber];
+  const user = users[from];
+  let replyId = "";
+  let text = "";
 
-  let messageText = "";
-  let buttonId = "";
-
-  if (messageObj.type === "text") {
-    messageText = messageObj.text.body;
-  } else if (
-    messageObj.type === "interactive" &&
-    messageObj.interactive.type === "button_reply"
-  ) {
-    buttonId = messageObj.interactive.button_reply.id;
+  if (msg.type === "interactive") {
+    replyId = msg.interactive.list_reply?.id;
+  }
+  if (msg.type === "text") {
+    text = msg.text.body;
   }
 
   // ====================================
-  // الترحيب (Knowledge أولاً ثم الدعم)
+  // الرسالة الأولى (خيارين فقط)
   // ====================================
-  if (!userData.greeted) {
-    // 1️⃣ رسالة Knowledge (CTA URL)
+  if (!user.greeted) {
     await sendWhatsApp({
       messaging_product: "whatsapp",
-      to: fromNumber,
+      to: from,
       type: "interactive",
       interactive: {
-        type: "cta_url",
+        type: "list",
         body: {
           text:
-            `مرحبًا ${fromName} 👋\n\n` +
-            `قبل ما تتواصل مع الدعم، ننصحك تطّلع على قاعدة المعرفة 👇`
+            `مرحبًا ${name} 👋\n\n` +
+            `كيف نقدر نساعدك؟ اختر من الخيارات 👇`
         },
         action: {
-          name: "cta_url",
-          parameters: {
-            display_text: "📘 فتح قاعدة المعرفة",
-            url: KNOWLEDGE_LINK
-          }
-        }
-      }
-    });
-
-    // 2️⃣ رسالة زر الدعم
-    await sendWhatsApp({
-      messaging_product: "whatsapp",
-      to: fromNumber,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: {
-          text: "إذا ما لقيتش الحل، تقدر تتواصل مباشرة مع فريق الدعم 👇"
-        },
-        action: {
-          buttons: [
+          button: "اختر",
+          sections: [
             {
-              type: "reply",
-              reply: {
-                id: "support",
-                title: "🧑‍💼 تواصل مع الدعم"
-              }
+              title: "الخدمات",
+              rows: [
+                {
+                  id: "knowledge",
+                  title: "📘 فتح قاعدة المعرفة"
+                },
+                {
+                  id: "support",
+                  title: "🧑‍💼 تواصل مع الدعم"
+                }
+              ]
             }
           ]
         }
       }
     });
 
-    userData.greeted = true;
+    user.greeted = true;
     return;
   }
 
   // ====================================
-  // زر تواصل مع الدعم
+  // اختيار قاعدة المعرفة
   // ====================================
-  if (buttonId === "support") {
-    if (!userData.ticketId) {
-      try {
-        const zammadResponse = await axios.post(
-          `${ZAMMAD_BASE_URL}/api/v1/tickets`,
-          {
-            title: `WhatsApp Ticket - ${fromName} (${fromNumber})`,
-            group: "Users",
-            article: {
-              body: "بدء تواصل من WhatsApp",
-              type: "note",
-              internal: false
-            },
-            customer_id: 1
-          },
-          {
-            headers: {
-              Authorization: `Token token=${ZAMMAD_TOKEN}`,
-              "Content-Type": "application/json"
-            }
+  if (replyId === "knowledge") {
+    await sendWhatsApp({
+      messaging_product: "whatsapp",
+      to: from,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: {
+          text: "📘 اضغط الزر بالأسفل لفتح قاعدة المعرفة مباشرة"
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: "فتح قاعدة المعرفة",
+            url: KNOWLEDGE_LINK
           }
-        );
-
-        userData.ticketId = zammadResponse.data.id;
-        userData.supportActivated = true;
-
-        await sendWhatsApp({
-          messaging_product: "whatsapp",
-          to: fromNumber,
-          text: {
-            body: "✅ تم فتح تذكرة دعم، اكتب رسالتك الآن وسيتم تحويلها للدعم."
-          }
-        });
-      } catch (err) {
-        console.error(
-          "Zammad ticket error:",
-          err.response?.data || err.message
-        );
+        }
       }
-    } else {
-      userData.supportActivated = true;
-    }
+    });
     return;
   }
 
   // ====================================
-  // رسائل المستخدم → Zammad
+  // اختيار الدعم
   // ====================================
-  if (userData.supportActivated && userData.ticketId && messageText) {
-    try {
-      await axios.post(
-        `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+  if (replyId === "support") {
+    if (!user.ticketId) {
+      const zammad = await axios.post(
+        `${ZAMMAD_BASE_URL}/api/v1/tickets`,
         {
-          ticket_id: userData.ticketId,
-          body: messageText,
-          type: "note",
-          internal: false
+          title: `WhatsApp - ${name}`,
+          group: "Users",
+          customer_id: 1,
+          article: {
+            body: "بدء محادثة دعم من WhatsApp",
+            type: "note",
+            internal: false
+          }
         },
         {
           headers: {
@@ -201,19 +156,48 @@ app.post("/webhook", async (req, res) => {
           }
         }
       );
-    } catch (err) {
-      console.error(
-        "Zammad append error:",
-        err.response?.data || err.message
-      );
+
+      user.ticketId = zammad.data.id;
+      user.support = true;
     }
+
+    await sendWhatsApp({
+      messaging_product: "whatsapp",
+      to: from,
+      text: {
+        body: "✅ تم فتح تذكرة دعم، تفضل اكتب رسالتك."
+      }
+    });
+    return;
+  }
+
+  // ====================================
+  // رسائل الدعم → Zammad
+  // ====================================
+  if (user.support && user.ticketId && text) {
+    await axios.post(
+      `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+      {
+        ticket_id: user.ticketId,
+        body: text,
+        type: "note",
+        internal: false
+      },
+      {
+        headers: {
+          Authorization: `Token token=${ZAMMAD_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
   }
 });
 
 // ====================================
 app.get("/", (req, res) => {
-  res.send("WhatsApp Webhook is running ✅");
+  res.send("Webhook running ✅");
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(10000, () => {
+  console.log("Server running on port 10000");
+});
