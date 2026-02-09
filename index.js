@@ -239,7 +239,8 @@ app.post("/webhook", async (req, res) => {
 
 
 if (media) {
-  const mimeType = media.mime.split(";")[0]; // remove codecs أو extra info
+  // نظف الـ mime type
+  const mimeType = media.mime.split(";")[0]; // إزالة أي extra info
   let ext = "file";
   if (mimeType.startsWith("image/")) ext = "jpg";
   else if (mimeType.startsWith("audio/")) ext = "ogg";
@@ -270,7 +271,7 @@ if (media) {
   );
 }
 
-
+    
   }
 });
 
