@@ -169,11 +169,12 @@ app.post("/webhook", async (req, res) => {
     await sendWhatsApp({
       messaging_product: "whatsapp",
       to: from,
-      text: {
-        body:
-          "✅ تم فتح تذكرة دعم فني لدى *رقمنة للخدمات التقنية*.\n" +
-          "تفضل اكتب رسالتك وسنقوم بمساعدتك."
-      }
+     text: {
+  body:
+    "✍️ تفضل بكتابة رسالتك أو سؤالك أو طلب المساعدة، " +
+    "وسيقوم فريقنا بالرد عليك في أقرب وقت ممكن."
+}
+
     });
     return;
   }
