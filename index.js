@@ -3,13 +3,22 @@ import axios from "axios";
 
 const app = express();
 app.use(express.json());
- // إعدادات Zammad و WhatsApp // ====================================
- const ZAMMAD_BASE_URL = "http://102.203.200.112"; 
- const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
-  const KNOWLEDGE_LINK = "http://102.203.200.112/help/ar?preview_token=awTUB6dcksRTfDSveLu7YRcpuBoSNpthYlSKg4NHGGs30KAWLBchsPsrh6mgDFe-";
-   const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
-    const WHATSAPP_PHONE_ID = "1004684596056367";
 
+// ====================================
+// إعدادات Zammad و WhatsApp
+// ====================================
+const ZAMMAD_BASE_URL = "http://102.203.200.112";
+const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
+
+const KNOWLEDGE_LINK =
+  "http://102.203.200.112/help/ar?preview_token=awTUB6dcksRTfDSveLu7YRcpuBoSNpthYlSKg4NHGGs30KAWLBchsPsrh6mgDFe-";
+
+const WHATSAPP_TOKEN =
+  "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquWUUBDtg9I3FkQtdyZCihqiwant2kWMeN3Hhrnbi3fP2z6saoE8eGOgWPqkUjVBolfZAgVa2o7oQrLr7iLX5NMdpv1vZAttk9qyGMfPp6j0Wxl5aCxzZC4a72O2WE5Ht3QgFFWep1ThHwZDZD";
+
+const WHATSAPP_PHONE_ID = "1004684596056367";
+
+// ====================================
 const users = {};
 
 // ====================================
@@ -63,7 +72,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // الرسالة الأولى (خيارين فقط)
+  // الرسالة الأولى
   // ====================================
   if (!user.greeted) {
     await sendWhatsApp({
@@ -75,6 +84,7 @@ app.post("/webhook", async (req, res) => {
         body: {
           text:
             `مرحبًا ${name} 👋\n\n` +
+            `أهلًا بك في *رقمنة للخدمات التقنية*\n` +
             `كيف نقدر نساعدك؟ اختر من الخيارات 👇`
         },
         action: {
@@ -85,11 +95,11 @@ app.post("/webhook", async (req, res) => {
               rows: [
                 {
                   id: "knowledge",
-                  title: "📘 فتح قاعدة المعرفة"
+                  title: "📘 الأسئلة والمشاكل الشائعة"
                 },
                 {
                   id: "support",
-                  title: "🧑‍💼 تواصل مع الدعم"
+                  title: "🧑‍💼 تواصل مع الدعم الفني"
                 }
               ]
             }
@@ -103,7 +113,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // اختيار قاعدة المعرفة
+  // الأسئلة والمشاكل الشائعة
   // ====================================
   if (replyId === "knowledge") {
     await sendWhatsApp({
@@ -113,12 +123,12 @@ app.post("/webhook", async (req, res) => {
       interactive: {
         type: "cta_url",
         body: {
-          text: "📘 اضغط الزر بالأسفل لفتح قاعدة المعرفة مباشرة"
+          text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة والمشاكل الشائعة"
         },
         action: {
           name: "cta_url",
           parameters: {
-            display_text: "فتح قاعدة المعرفة",
+            display_text: "فتح الأسئلة الشائعة",
             url: KNOWLEDGE_LINK
           }
         }
@@ -128,18 +138,21 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // اختيار الدعم
+  // الدعم الفني
   // ====================================
   if (replyId === "support") {
     if (!user.ticketId) {
       const zammad = await axios.post(
         `${ZAMMAD_BASE_URL}/api/v1/tickets`,
         {
-          title: `WhatsApp - ${name}`,
+          title: `WhatsApp - ${name} (${from})`,
           group: "Users",
           customer_id: 1,
           article: {
-            body: "بدء محادثة دعم من WhatsApp",
+            body:
+              `تم بدء تواصل دعم عبر WhatsApp\n\n` +
+              `الاسم: ${name}\n` +
+              `الرقم: ${from}`,
             type: "note",
             internal: false
           }
@@ -160,7 +173,9 @@ app.post("/webhook", async (req, res) => {
       messaging_product: "whatsapp",
       to: from,
       text: {
-        body: "✅ تم فتح تذكرة دعم، تفضل اكتب رسالتك."
+        body:
+          "✅ تم فتح تذكرة دعم فني لدى *رقمنة للخدمات التقنية*.\n" +
+          "تفضل اكتب رسالتك وسنقوم بمساعدتك."
       }
     });
     return;
