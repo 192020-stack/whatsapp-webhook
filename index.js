@@ -88,16 +88,17 @@ app.post("/webhook", async (req, res) => {
           sections: [
             {
               title: "الخدمات",
-              rows: [
-                {
-                  id: "knowledge",
-                  title: "📘 الأسئلة والمشاكل الشائعة"
-                },
-                {
-                  id: "support",
-                  title: "🧑‍💼 تواصل مع الدعم الفني"
-                }
-              ]
+             rows: [
+  {
+    id: "knowledge",
+    title: "📘 الأسئلة الشائعة"
+  },
+  {
+    id: "support",
+    title: "🧑‍💼 الدعم الفني"
+  }
+]
+
             }
           ]
         }
