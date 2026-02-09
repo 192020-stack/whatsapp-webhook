@@ -1,6 +1,6 @@
 import express from "express";
 import axios from "axios";
-import sharp from "sharp"; // مهم: npm install sharp
+import sharp from "sharp"; // npm install sharp
 
 const app = express();
 app.use(express.json());
@@ -164,34 +164,45 @@ app.post("/webhook", async (req, res) => {
   // رسائل الدعم → Zammad (Text + Media)
   // ====================================
   if (user.support && user.ticketId) {
-    let articlePayload = { ticket_id: user.ticketId, body: text || "", type: "note", internal: false };
-if (mediaData) {
-  let { data, mime_type } = mediaData;
+    let articlePayload = { ticket_id: user.ticketId, body: text || "رسالة من المستخدم", type: "note", internal: false };
 
-  // تحويل WebP إلى JPEG
-  if (mime_type === "image/webp") {
-    const buffer = Buffer.from(data, "base64");
-    const jpegBuffer = await sharp(buffer).jpeg().toBuffer();
-    data = jpegBuffer.toString("base64");
-    mime_type = "image/jpeg";
-  }
+    // ====================================
+    // معالجة الميديا
+    // ====================================
+    if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
+      try {
+        const mediaId = msg[msg.type].id;
+        const mediaData = await downloadMedia(mediaId);
 
-  const extension = mime_type.split("/")[1] || "bin";
-  const fileName = `file.${extension}`;
+        if (mediaData) {
+          let { data, mime_type } = mediaData;
 
-  // مهم جداً: body نصي دائمًا
-  articlePayload.body = `📎 ${msg.type} من المستخدم`;
-  articlePayload.attachments = [
-    {
-      data,
-      mime_type,
-      name: fileName
+          // تحويل WebP إلى JPEG
+          if (mime_type === "image/webp") {
+            const buffer = Buffer.from(data, "base64");
+            const jpegBuffer = await sharp(buffer).jpeg().toBuffer();
+            data = jpegBuffer.toString("base64");
+            mime_type = "image/jpeg";
+          }
+
+          const extension = mime_type.split("/")[1] || "bin";
+          const fileName = `file.${extension}`;
+
+          articlePayload.body = `📎 ${msg.type} من المستخدم`;
+          articlePayload.attachments = [
+            {
+              data,
+              mime_type,
+              name: fileName
+            }
+          ];
+        } else {
+          articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
+        }
+      } catch (err) {
+        console.error("Media processing error:", err.message);
+      }
     }
-  ];
-} else {
-  articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
-}
-
 
     try {
       await axios.post(
