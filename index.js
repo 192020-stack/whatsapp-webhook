@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import sharp from "sharp"; // مهم: npm install sharp
 
 const app = express();
 app.use(express.json());
@@ -169,27 +170,43 @@ app.post("/webhook", async (req, res) => {
     if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
       const mediaId = msg[msg.type].id;
       const mediaData = await downloadMedia(mediaId);
-if (mediaData) {
-  const extension = mediaData.mime_type.split("/")[1];
-  articlePayload.body = `📎 ${msg.type} من المستخدم`;
-  articlePayload.attachments = [
-    {
-      data: mediaData.data,
-      mime_type: mediaData.mime_type,
-      name: `${msg.type}.${extension}`
-    }
-  ];
-}
-else {
+
+      if (mediaData) {
+        let { data, mime_type } = mediaData;
+        let extension = mime_type.split("/")[1];
+        let fileName = `file.${extension}`;
+
+        // تحويل WebP إلى JPEG
+        if (mime_type === "image/webp") {
+          const buffer = Buffer.from(data, "base64");
+          const jpegBuffer = await sharp(buffer).jpeg().toBuffer();
+          data = jpegBuffer.toString("base64");
+          mime_type = "image/jpeg";
+          fileName = "file.jpeg";
+        }
+
+        articlePayload.body = `📎 ${msg.type} من المستخدم`;
+        articlePayload.attachments = [
+          {
+            data,
+            mime_type,
+            name: fileName
+          }
+        ];
+      } else {
         articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
       }
     }
 
-    await axios.post(
-      `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-      articlePayload,
-      { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
-    );
+    try {
+      await axios.post(
+        `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
+        articlePayload,
+        { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+      );
+    } catch (err) {
+      console.error("Zammad Error:", err.response?.data || err.message);
+    }
   }
 });
 
