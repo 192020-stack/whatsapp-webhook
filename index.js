@@ -189,17 +189,24 @@ app.post("/webhook", async (req, res) => {
       internal: false
     };
 
-    if (msg.type === "text") {
-      articlePayload.body = text;
-    } else if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
-      const mediaId = msg[msg.type].id;
-      const mediaData = await downloadMedia(mediaId);
-      if (mediaData) {
-        articlePayload.body = `📎 ${msg.type} من المستخدم`;
-        articlePayload.attachment = [{ data: mediaData.data, mime_type: mediaData.mime_type, name: `${msg.type}.${mediaData.mime_type.split("/")[1]}` }];
-      } else {
-        articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
+ if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
+  const mediaId = msg[msg.type].id;
+  const mediaData = await downloadMedia(mediaId);
+  if (mediaData) {
+    const extension = mediaData.mime_type.split("/")[1]; // jpg, png, mp4, ogg
+    articlePayload.body = `📎 ${msg.type} من المستخدم`;
+    articlePayload.attachment = [
+      {
+        data: mediaData.data,
+        mime_type: mediaData.mime_type,
+        name: `${msg.type}.${extension}`  // <-- مهم جدًا
       }
+    ];
+  } else {
+    articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
+  }
+
+
     } else {
       articlePayload.body = "رسالة غير مدعومة";
     }
