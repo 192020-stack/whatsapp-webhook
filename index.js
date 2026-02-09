@@ -35,29 +35,29 @@ async function sendWhatsApp(payload) {
 }
 
 // ====================================
-// تحميل الميديا من WhatsApp
+// تحميل الميديا من WhatsApp Cloud API
 // ====================================
 async function downloadMedia(mediaId) {
   try {
-    const mediaMeta = await axios.get(
-      `https://graph.facebook.com/v17.0/${mediaId}`,
-      {
-        headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
-      }
-    );
+    // 1️⃣ احصل على رابط التنزيل
+    const mediaRes = await axios.get(`https://graph.facebook.com/v17.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
 
-    const url = mediaMeta.data.url;
-    const mimeType = mediaMeta.data.mime_type;
+    const mediaUrl = mediaRes.data.url;
 
-    const mediaResp = await axios.get(url, {
+    // 2️⃣ احصل على البيانات
+    const fileRes = await axios.get(mediaUrl, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
       responseType: "arraybuffer"
     });
 
-    const base64Data = Buffer.from(mediaResp.data, "binary").toString("base64");
-    return { data: base64Data, mime_type: mimeType };
-  } catch (err) {
-    console.error("Media download error:", err.message);
+    const mimeType = fileRes.headers["content-type"];
+    const base64Data = Buffer.from(fileRes.data, "binary").toString("base64");
+
+    return { mime_type: mimeType, data: base64Data };
+  } catch (e) {
+    console.error("Media download error:", e.response?.data || e.message);
     return null;
   }
 }
@@ -68,21 +68,17 @@ async function downloadMedia(mediaId) {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  const contact = req.body.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
+  const entry = req.body.entry?.[0]?.changes?.[0]?.value;
+  const msg = entry?.messages?.[0];
+  const contact = entry?.contacts?.[0];
   if (!msg) return;
 
   const from = msg.from;
   const name = contact?.profile?.name || "مستخدم";
 
   if (!users[from]) {
-    users[from] = {
-      greeted: false,
-      ticketId: null,
-      support: false
-    };
+    users[from] = { greeted: false, ticketId: null, support: false };
   }
-
   const user = users[from];
   let replyId = "";
   let text = "";
@@ -120,7 +116,6 @@ app.post("/webhook", async (req, res) => {
         }
       }
     });
-
     user.greeted = true;
     return;
   }
@@ -135,15 +130,10 @@ app.post("/webhook", async (req, res) => {
       type: "interactive",
       interactive: {
         type: "cta_url",
-        body: {
-          text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة والمشاكل الشائعة"
-        },
+        body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة والمشاكل الشائعة" },
         action: {
           name: "cta_url",
-          parameters: {
-            display_text: "فتح الأسئلة الشائعة",
-            url: KNOWLEDGE_LINK
-          }
+          parameters: { display_text: "فتح الأسئلة الشائعة", url: KNOWLEDGE_LINK }
         }
       }
     });
@@ -170,12 +160,7 @@ app.post("/webhook", async (req, res) => {
             internal: false
           }
         },
-        {
-          headers: {
-            Authorization: `Token token=${ZAMMAD_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        }
+        { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
       );
 
       user.ticketId = zammad.data.id;
@@ -195,139 +180,33 @@ app.post("/webhook", async (req, res) => {
   }
 
   // ====================================
-  // رسائل الدعم → Zammad (نصوص وميديا)
+  // رسائل الدعم → Zammad
   // ====================================
   if (user.support && user.ticketId) {
-    // نصوص
-    if (text) {
-      await axios.post(
-        `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-        {
-          ticket_id: user.ticketId,
-          body: text,
-          type: "note",
-          internal: false
-        },
-        {
-          headers: {
-            Authorization: `Token token=${ZAMMAD_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
+    let articlePayload = {
+      ticket_id: user.ticketId,
+      type: "note",
+      internal: false
+    };
+
+    if (msg.type === "text") {
+      articlePayload.body = text;
+    } else if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
+      const mediaId = msg[msg.type].id;
+      const mediaData = await downloadMedia(mediaId);
+      if (mediaData) {
+        articlePayload.body = `📎 ${msg.type} من المستخدم`;
+        articlePayload.attachment = [{ data: mediaData.data, mime_type: mediaData.mime_type, name: `${msg.type}.${mediaData.mime_type.split("/")[1]}` }];
+      } else {
+        articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
+      }
+    } else {
+      articlePayload.body = "رسالة غير مدعومة";
     }
 
-    // صور
-    if (msg.type === "image" && msg.image?.id) {
-      const media = await downloadMedia(msg.image.id);
-      if (media) {
-        await axios.post(
-          `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-          {
-            ticket_id: user.ticketId,
-            type: "note",
-            internal: false,
-            attachments: [
-              {
-                filename: "image.jpg",
-                mime_type: media.mime_type,
-                data: media.data
-              }
-            ]
-          },
-          {
-            headers: {
-              Authorization: `Token token=${ZAMMAD_TOKEN}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-      }
-    }
-
-    // صوت
-    if (msg.type === "audio" && msg.audio?.id) {
-      const media = await downloadMedia(msg.audio.id);
-      if (media) {
-        await axios.post(
-          `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-          {
-            ticket_id: user.ticketId,
-            type: "note",
-            internal: false,
-            attachments: [
-              {
-                filename: "audio.ogg",
-                mime_type: media.mime_type,
-                data: media.data
-              }
-            ]
-          },
-          {
-            headers: {
-              Authorization: `Token token=${ZAMMAD_TOKEN}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-      }
-    }
-
-    // فيديو
-    if (msg.type === "video" && msg.video?.id) {
-      const media = await downloadMedia(msg.video.id);
-      if (media) {
-        await axios.post(
-          `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-          {
-            ticket_id: user.ticketId,
-            type: "note",
-            internal: false,
-            attachments: [
-              {
-                filename: "video.mp4",
-                mime_type: media.mime_type,
-                data: media.data
-              }
-            ]
-          },
-          {
-            headers: {
-              Authorization: `Token token=${ZAMMAD_TOKEN}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-      }
-    }
-
-    // مستند
-    if (msg.type === "document" && msg.document?.id) {
-      const media = await downloadMedia(msg.document.id);
-      if (media) {
-        await axios.post(
-          `${ZAMMAD_BASE_URL}/api/v1/ticket_articles`,
-          {
-            ticket_id: user.ticketId,
-            type: "note",
-            internal: false,
-            attachments: [
-              {
-                filename: msg.document.filename || "document",
-                mime_type: media.mime_type,
-                data: media.data
-              }
-            ]
-          },
-          {
-            headers: {
-              Authorization: `Token token=${ZAMMAD_TOKEN}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-      }
-    }
+    await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
+      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" }
+    });
   }
 });
 
