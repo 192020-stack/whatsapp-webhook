@@ -165,38 +165,37 @@ app.post("/webhook", async (req, res) => {
   // ====================================
   if (user.support && user.ticketId) {
     let articlePayload = { ticket_id: user.ticketId, body: text || "", type: "note", internal: false };
+if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
+  const mediaId = msg[msg.type].id;
+  const mediaData = await downloadMedia(mediaId);
 
-    // إذا كانت الميديا
-    if (msg.type === "image" || msg.type === "video" || msg.type === "audio" || msg.type === "document") {
-      const mediaId = msg[msg.type].id;
-      const mediaData = await downloadMedia(mediaId);
+  if (mediaData) {
+    let { data, mime_type } = mediaData;
+    let extension = mime_type.split("/")[1];
+    let fileName = `file.${extension}`;
 
-      if (mediaData) {
-        let { data, mime_type } = mediaData;
-        let extension = mime_type.split("/")[1];
-        let fileName = `file.${extension}`;
-
-        // تحويل WebP إلى JPEG
-        if (mime_type === "image/webp") {
-          const buffer = Buffer.from(data, "base64");
-          const jpegBuffer = await sharp(buffer).jpeg().toBuffer();
-          data = jpegBuffer.toString("base64");
-          mime_type = "image/jpeg";
-          fileName = "file.jpeg";
-        }
-
-        articlePayload.body = `📎 ${msg.type} من المستخدم`;
-        articlePayload.attachments = [
-          {
-            data,
-            mime_type,
-            name: fileName
-          }
-        ];
-      } else {
-        articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
-      }
+    // تحويل WebP إلى JPEG
+    if (mime_type === "image/webp") {
+      const buffer = Buffer.from(data, "base64");
+      const jpegBuffer = await sharp(buffer).jpeg().toBuffer();
+      data = jpegBuffer.toString("base64");
+      mime_type = "image/jpeg";
+      fileName = "file.jpeg";
     }
+
+    articlePayload.body = `📎 ${msg.type} من المستخدم`; // تأكد وجود body
+    articlePayload.attachments = [
+      {
+        data: data,
+        mime_type: mime_type,
+        name: fileName
+      }
+    ];
+  } else {
+    articlePayload.body = `📎 ${msg.type} غير متاحة للتحميل`;
+  }
+}
+
 
     try {
       await axios.post(
