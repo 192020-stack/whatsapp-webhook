@@ -168,7 +168,7 @@ async function addZammadArticle(articlePayload) {
   }
 }
 // ============================================================
-// استقبال الردود من ZAMMAD (Outbound) - نسخة حل مشكلة 404
+// استقبال الردود من ZAMMAD (Outbound) - نسخة حل مشكلة المسار 404
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -185,25 +185,25 @@ app.post("/zammad/webhook", async (req, res) => {
 
     let messageBody = (article.body || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
-    // التعامل مع المرفقات
     if (article.attachments && article.attachments.length > 0) {
-      console.log(`📎 Found ${article.attachments.length} attachments. Attempting download...`);
+      console.log(`📎 Found ${article.attachments.length} attachments.`);
       
       for (const att of article.attachments) {
         try {
-          // محاولة تحميل المرفق - تعديل المسار ليكون أكثر دقة
+          // التعديل هنا: محاولة الوصول عبر المسار المباشر للمرفق
+          // نستخدم الـ ID الخاص بالمرفق مباشرة مع التوكن
           const downloadUrl = `${ZAMMAD_BASE_URL}/api/v1/ticket_attachment_download/${ticket.id}/${article.id}/${att.id}`;
-          console.log(`☁️ Trying to download from: ${downloadUrl}`);
+          
+          console.log(`☁️ Attempting download: ${att.filename}`);
 
           const response = await axios.get(downloadUrl, {
             headers: { 
-                Authorization: `Token token=${ZAMMAD_TOKEN}`,
-                "Accept": "*/*" 
+                "Authorization": `Token token=${ZAMMAD_TOKEN}`
             },
             responseType: 'arraybuffer'
           });
 
-          console.log(`✅ Download success for ${att.filename}. Size: ${response.data.length} bytes`);
+          console.log(`✅ Download success. Size: ${response.data.length} bytes`);
 
           const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename, att.content_type);
 
@@ -219,13 +219,30 @@ app.post("/zammad/webhook", async (req, res) => {
           });
           messageBody = ""; 
         } catch (mediaErr) {
-          // طباعة الخطأ بالتفصيل الممل لنعرف لماذا 404
-          console.error(`❌ [Outbound Media Error]: Failed URL: ${ZAMMAD_BASE_URL}/api/v1/ticket_attachment_download/${ticket.id}/${article.id}/${att.id}`);
-          console.error(`❌ Error Details:`, mediaErr.response?.data?.toString() || mediaErr.message);
+          console.error(`❌ [Download Failed]: ID ${att.id}`);
+          // إذا فشل المسار الأول، سنجرب مساراً بديلاً يستخدمه زاماد أحياناً
+          console.log("🔄 Trying alternative path...");
+          try {
+             const altUrl = `${ZAMMAD_BASE_URL}/api/v1/attachments/${att.id}?ticket_id=${ticket.id}&article_id=${article.id}`;
+             const altRes = await axios.get(altUrl, {
+                headers: { "Authorization": `Token token=${ZAMMAD_TOKEN}` },
+                responseType: 'arraybuffer'
+             });
+             const mediaIdAlt = await uploadMediaToWhatsApp(Buffer.from(altRes.data), att.filename, att.content_type);
+             await sendWhatsApp({
+                messaging_product: "whatsapp",
+                to: phoneNumber,
+                type: att.content_type.includes("image") ? "image" : "document",
+                [att.content_type.includes("image") ? "image" : "document"]: { id: mediaIdAlt, caption: messageBody }
+             });
+             console.log("✅ Alternative path worked!");
+             messageBody = "";
+          } catch (altErr) {
+             console.error("❌ Both paths failed. Please check Zammad API permissions.");
+          }
         }
       }
     } else if (messageBody) {
-      // إرسال نص فقط إذا لم تكن هناك صور
       await sendWhatsApp({
         messaging_product: "whatsapp",
         to: phoneNumber,
