@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - النسخة الكاملة المعدلة بنظام المنظومات]
+ * [Full Complete Code - النسخة الشاملة مع إصلاح القوائم والرجوع]
  */
 
 const express = require("express");
@@ -192,7 +192,7 @@ async function addZammadArticle(articlePayload) {
 }
 
 // ============================================================
-// [النسخة النهائية] - دعم الصور، الفيديو، والصوت (Zammad -> WhatsApp)
+// [Zammad -> WhatsApp] - (المحافظة على الوسائط بالكامل)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -210,20 +210,14 @@ app.post("/zammad/webhook", async (req, res) => {
     let messageBody = (article.body || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
     if (article.attachments && article.attachments.length > 0) {
-      console.log(`📎 Found ${article.attachments.length} attachments.`);
-      
       for (const att of article.attachments) {
         try {
-          // استخدام المسار البديل الناجح
           const successUrl = `${ZAMMAD_BASE_URL}/api/v1/attachments/${att.id}?ticket_id=${ticket.id}&article_id=${article.id}`;
-          console.log(`☁️ Downloading attachment: ${att.filename}`);
-
           const response = await axios.get(successUrl, {
             headers: { "Authorization": `Token token=${ZAMMAD_TOKEN}` },
             responseType: 'arraybuffer'
           });
 
-          // رفع الميديا مع تحديد النوع الصحيح
           const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename);
           const mimeType = getMimeType(att.filename);
 
@@ -239,22 +233,18 @@ app.post("/zammad/webhook", async (req, res) => {
             [mediaType]: { id: mediaId }
           };
 
-          // إضافة Caption للصور والفيديو فقط
           if ((mediaType === "image" || mediaType === "video") && messageBody) {
             payload[mediaType].caption = messageBody;
             messageBody = ""; 
           }
 
           await sendWhatsApp(payload);
-          console.log(`✅ [Success] ${mediaType} sent to WhatsApp.`);
-          
         } catch (err) {
-          console.error(`❌ Error processing attachment ${att.id}:`, err.message);
+          console.error(`❌ Error processing attachment:`, err.message);
         }
       }
     } 
 
-    // إرسال ما تبقى من النص كرسالة منفصلة
     if (messageBody) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -266,7 +256,6 @@ app.post("/zammad/webhook", async (req, res) => {
 
     return res.status(200).send("OK");
   } catch (error) {
-    console.error("❌ [Global Outbound Error]:", error.message);
     return res.sendStatus(500);
   }
 });
@@ -283,7 +272,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =============================
-// WEBHOOK RECEIVE (POST) - استقبال من الواتساب
+// WEBHOOK RECEIVE (POST) - استقبال من الواتساب مع القوائم المصلحة
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -304,52 +293,48 @@ app.post("/webhook", async (req, res) => {
     const user = users[from];
 
     let replyId = "";
-    let text = "";
+    let text = msg.text?.body || "";
 
     if (msg.type === "interactive") {
       replyId = msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
     }
-    if (msg.type === "text") text = msg.text?.body || "";
 
-    // 1. القائمة الرئيسية (اختيار المنظومة)
-    if (!user.greeted || text.toLowerCase() === "رجوع") {
+    // --- منطق القائمة الرئيسية (الرجوع أو البداية) ---
+    if (!user.greeted || replyId === "back_to_main") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "list",
-          body: { text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nالرجاء اختيار المنظومة المطلوبة من القائمة 👇` },
+          body: { text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nالرجاء اختيار المنظومة المطلوبة 👇` },
           action: {
             button: "اختر المنظومة",
             sections: [{
-              title: "المنظومات",
-              rows: [
-                { id: "tajer_libya", title: "🏦 منظومة التاجر الليبي", description: "الخدمات والدعم الفني" }
-                // مستقبلاً يمكنك إضافة rows هنا للمنظومات الأخرى
-              ]
+              title: "المنظومات المتاحة",
+              rows: [{ id: "libyan_tajer", title: "🏦 منظومة التاجر الليبي", description: "الدعم والأسئلة الخاصة بالمنظومة" }]
             }]
           }
         }
       });
       user.greeted = true;
-      user.support = false; // تصفير الدعم عند العودة للمنيو
+      user.support = false; // إلغاء وضع الدعم عند الرجوع للمنيو
       return res.sendStatus(200);
     }
 
-    // 2. قائمة خدمات منظومة التاجر الليبي
-    if (replyId === "tajer_libya") {
+    // --- قائمة منظومة التاجر الليبي ---
+    if (replyId === "libyan_tajer") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "list",
-          body: { text: `🏦 *منظومة التاجر الليبي*\n\nكيف يمكننا مساعدتك؟ اختر من الخيارات التالية 👇` },
+          body: { text: `🏦 *منظومة التاجر الليبي*\n\nكيف يمكننا مساعدتك اليوم؟` },
           action: {
             button: "اختر الخدمة",
             sections: [{
-              title: "خدمات المنظومة",
+              title: "خيارات المنظومة",
               rows: [
                 { id: "knowledge", title: "📘 الأسئلة الشائعة", description: "دليل الاستخدام والحلول" },
-                { id: "support", title: "🧑‍💼 الدعم الفني", description: "التواصل مع الموظف المختص" },
-                { id: "back_main", title: "🔙 الرجوع للمنيو الرئيسي", description: "اختيار منظومة أخرى" }
+                { id: "support", title: "🧑‍💼 الدعم الفني", description: "التحدث مع موظف الدعم" },
+                { id: "back_to_main", title: "🔙 الرجوع للمنيو الرئيسي", description: "اختيار منظومة أخرى" }
               ]
             }]
           }
@@ -358,39 +343,32 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 3. معالجة خيار الرجوع للمنيو الرئيسي
-    if (replyId === "back_main") {
-      user.greeted = false; // سيؤدي هذا لإرسال القائمة الأولى في الطلب القادم
-      return res.status(200).send("Back Triggered");
-    }
-
-    // 4. معالجة الأسئلة الشائعة
+    // --- تنفيذ الخيارات (أسئلة شائعة / دعم فني) ---
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "cta_url",
-          body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة الشائعة لمنظومة التاجر الليبي" },
+          body: { text: "📘 اضغط الزر للاطلاع على الأسئلة الشائعة" },
           action: { name: "cta_url", parameters: { display_text: "فتح الأسئلة", url: KNOWLEDGE_LINK } }
         }
       });
       return res.sendStatus(200);
     }
 
-    // 5. معالجة الدعم الفني
     if (replyId === "support") {
       if (!user.ticketId) {
-        user.ticketId = await createZammadTicket({ name: `${name} (التاجر الليبي)`, from });
-        user.support = true;
+        user.ticketId = await createZammadTicket({ name, from });
       }
+      user.support = true;
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: "✍️ تفضل بكتابة رسالتك بخصوص منظومة التاجر الليبي وسنقوم بالرد عليك." }
+        text: { body: "✍️ تفضل بكتابة رسالتك وسنقوم بالرد عليك في أقرب وقت." }
       });
       return res.sendStatus(200);
     }
 
-    // 6. إرسال الرسائل من واتساب إلى Zammad (دعم الميديا بالكامل)
+    // --- إرسال الوسائط والنصوص لـ Zammad (عند تفعيل الدعم) ---
     if (user.support && user.ticketId) {
       const articlePayload = { ticket_id: user.ticketId, from: name, body: "" };
 
@@ -417,7 +395,6 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.get("/", (req, res) => res.send("Webhook running ✅"));
-
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
