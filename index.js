@@ -168,7 +168,7 @@ async function addZammadArticle(articlePayload) {
   }
 }
 // ============================================================
-// [النسخة النهائية] - بعد نجاح المسار البديل في جلب المرفقات
+// [النسخة النهائية الشاملة] - دعم الصور، الفيديو، والصوت (WhatsApp Outbound)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -190,37 +190,51 @@ app.post("/zammad/webhook", async (req, res) => {
       
       for (const att of article.attachments) {
         try {
-          // استخدام المسار الذي أثبت نجاحه في السجلات السابقة
           const successUrl = `${ZAMMAD_BASE_URL}/api/v1/attachments/${att.id}?ticket_id=${ticket.id}&article_id=${article.id}`;
-          console.log(`☁️ Downloading attachment ID ${att.id} from success path...`);
+          console.log(`☁️ Downloading attachment: ${att.filename}`);
 
           const response = await axios.get(successUrl, {
             headers: { "Authorization": `Token token=${ZAMMAD_TOKEN}` },
             responseType: 'arraybuffer'
           });
 
-          // تحديد نوع الملف بشكل أدق
-          const contentType = att.content_type || "image/png"; 
+          const contentType = att.content_type || "application/octet-stream";
           const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename, contentType);
 
-          let mediaType = "document";
-          if (contentType.includes("image")) mediaType = "image";
-          else if (contentType.includes("video")) mediaType = "video";
+          // تحديد نوع الوسائط لواتساب بناءً على الـ Content Type
+          let mediaType = "document"; // الافتراضي ملف
+          if (contentType.includes("image")) {
+            mediaType = "image";
+          } else if (contentType.includes("video")) {
+            mediaType = "video";
+          } else if (contentType.includes("audio")) {
+            mediaType = "audio";
+          }
 
-          await sendWhatsApp({
+          const payload = {
             messaging_product: "whatsapp",
             to: phoneNumber,
             type: mediaType,
-            [mediaType]: { id: mediaId, caption: messageBody }
-          });
+            [mediaType]: { id: mediaId }
+          };
 
-          console.log(`✅ [Success] Attachment ${att.filename} sent to WhatsApp.`);
-          messageBody = ""; // تصفير النص للمرفقات التالية
+          // إضافة Caption للصور والفيديو فقط (الواتساب لا يدعم Caption للصوت)
+          if ((mediaType === "image" || mediaType === "video") && messageBody) {
+            payload[mediaType].caption = messageBody;
+            messageBody = ""; // تصفير النص لكي لا يرسل مرة أخرى
+          }
+
+          await sendWhatsApp(payload);
+          console.log(`✅ [Success] ${mediaType} sent to WhatsApp.`);
+          
         } catch (err) {
           console.error(`❌ Error processing attachment ${att.id}:`, err.message);
         }
       }
-    } else if (messageBody) {
+    } 
+
+    // إرسال ما تبقى من النص كرسالة منفصلة إذا لم يرسل كـ Caption
+    if (messageBody) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
         to: phoneNumber,
