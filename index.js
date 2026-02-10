@@ -2,6 +2,7 @@
  * WhatsApp (Cloud API) -> Webhook -> Zammad
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
+ * + Auto Customer Creation & Chat Type Support
  */
 
 const express = require("express");
@@ -22,7 +23,7 @@ const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquW
 const WHATSAPP_PHONE_ID = "1004684596056367";
 const GRAPH_VERSION = "v19.0"; 
 const ZAMMAD_GROUP = "Users";  
-const DEFAULT_CUSTOMER_ID = "1"; 
+const DEFAULT_CUSTOMER_ID = "1"; // سيستخدم فقط كاحتياطي في حال فشل إنشاء العميل
 const PORT = 10000; 
 const VERIFY_TOKEN = "my_verify_token"; 
 const META_APP_SECRET = ""; 
@@ -80,17 +81,51 @@ async function downloadMedia(mediaId) {
   return { data: buffer.toString("base64"), mime_type, ext };
 }
 
+// [جديد] البحث عن العميل أو إنشاؤه
+async function getOrCreateCustomer(name, phone) {
+  try {
+    // البحث باستخدام الهاتف
+    const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
+      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
+    });
+
+    if (search.data && search.data.length > 0) {
+      return search.data[0].id; // العميل موجود
+    }
+
+    // إنشاء عميل جديد
+    const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
+      firstname: name,
+      lastname: "(WhatsApp)",
+      phone: phone,
+      roles: ["Customer"]
+    }, {
+      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
+    });
+
+    return newUser.data.id;
+  } catch (err) {
+    console.error("Error creating/finding customer:", err.message);
+    return Number(DEFAULT_CUSTOMER_ID); // العودة للحساب الافتراضي عند الخطأ
+  }
+}
+
+// [معدل] إنشاء التذكرة بمعرف العميل الصحيح ونوع chat
 async function createZammadTicket({ name, from }) {
+  const customerId = await getOrCreateCustomer(name, from);
+
   const res = await axios.post(
     `${ZAMMAD_BASE_URL}/api/v1/tickets`,
     {
       title: `WhatsApp - ${name} (${from})`,
       group: ZAMMAD_GROUP,
-      customer_id: Number(DEFAULT_CUSTOMER_ID),
+      customer_id: customerId, // ربط التذكرة بالعميل الحقيقي
       article: {
         body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-        type: "note",
+        type: "chat", // [مهم] يظهر كشات وليس ملاحظة
         internal: false,
+        sender: "Customer", // تحديد المرسل كعميل
+        from: name 
       },
     },
     {
@@ -103,7 +138,12 @@ async function createZammadTicket({ name, from }) {
   return res.data?.id;
 }
 
+// [معدل] إضافة رد للتذكرة بنوع chat
 async function addZammadArticle(articlePayload) {
+  // التأكد من النوع وتحديد المرسل
+  articlePayload.type = "chat";
+  articlePayload.sender = "Customer";
+  
   await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
     headers: {
       Authorization: `Token token=${ZAMMAD_TOKEN}`,
@@ -113,43 +153,33 @@ async function addZammadArticle(articlePayload) {
 }
 
 // =============================
-// [جديد] استقبال الردود من ZAMMAD
+// استقبال الردود من ZAMMAD (Outbound)
 // =============================
 app.post("/zammad/webhook", async (req, res) => {
   try {
     const { ticket, article } = req.body;
 
-    // تجاهل التحديثات التي ليست "مقالات" أو إذا كانت ملاحظة داخلية
     if (!article || article.internal === true) {
-      return res.status(200).send("Ignored (internal or no article)");
+      return res.status(200).send("Ignored");
     }
 
-    // تجاهل الرسائل القادمة من "Customer" (حتى لا يحدث تكرار لانهائي للرسائل الواردة)
-    // وتجاهل رسائل النظام
     if (article.sender === "Customer" || article.sender === "System") {
-      return res.status(200).send("Ignored (customer/system message)");
+      return res.status(200).send("Ignored");
     }
 
-    // استخراج رقم الهاتف من عنوان التذكرة
-    // التنسيق المستخدم في الكود هو: WhatsApp - Name (Phone)
-    // سنستخدم Regex لاستخراج الرقم بين القوسين
     const title = ticket.title || "";
-    const phoneMatch = title.match(/\(([^)]+)\)/); // البحث عن نص بين قوسين
+    const phoneMatch = title.match(/\(([^)]+)\)/);
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
 
     if (!phoneNumber) {
-      console.log("Could not extract phone number from ticket title:", title);
-      return res.status(200).send("No phone number found");
+      return res.status(200).send("No phone found");
     }
 
-    // تنظيف نص الرسالة من HTML (لأن Zammad يرسل HTML)
     let messageBody = article.body || "";
-    // حذف وسوم HTML البسيطة لتبقى الرسالة نظيفة
     messageBody = messageBody.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
     if (!messageBody) return res.status(200).send("Empty body");
 
-    // إرسال الرد إلى واتساب
     await sendWhatsApp({
       messaging_product: "whatsapp",
       to: phoneNumber,
@@ -157,7 +187,7 @@ app.post("/zammad/webhook", async (req, res) => {
       text: { body: messageBody },
     });
 
-    console.log(`✅ Reply sent to ${phoneNumber} from Zammad`);
+    console.log(`✅ Reply sent to ${phoneNumber}`);
     return res.status(200).send("Sent");
 
   } catch (error) {
@@ -240,7 +270,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // الأسئلة الشائعة (تعديل بسيط: استخدام رابط نصي لأن cta_url يتطلب قالب أحياناً، لكن تركتها كما هي بناء لطلبك)
+    // الأسئلة الشائعة
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -280,7 +310,15 @@ app.post("/webhook", async (req, res) => {
 
     // رسائل الدعم -> Zammad
     if (user.support && user.ticketId) {
-      const articlePayload = { ticket_id: user.ticketId, type: "note", internal: false, body: "" };
+      // تعديل: تمرير اسم المرسل ليظهر بشكل صحيح
+      const articlePayload = { 
+        ticket_id: user.ticketId, 
+        type: "chat", // مهم جداً
+        internal: false, 
+        sender: "Customer",
+        from: name, // يظهر اسم المرسل في Zammad
+        body: "" 
+      };
 
       if (msg.type === "text") articlePayload.body = text || "(رسالة نصية فارغة)";
       else if (["image", "video", "audio", "document"].includes(msg.type)) {
@@ -288,7 +326,7 @@ app.post("/webhook", async (req, res) => {
         const mediaData = await downloadMedia(mediaId);
 
         if (mediaData?.data) {
-          articlePayload.body = `📎 مرفق (${msg.type}) من المستخدم`;
+          articlePayload.body = `📎 مرفق (${msg.type})`;
           articlePayload.attachments = [
             { filename: `${msg.type}.${mediaData.ext}`, data: mediaData.data, "mime-type": mediaData.mime_type },
           ];
