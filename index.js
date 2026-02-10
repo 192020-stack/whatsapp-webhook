@@ -1,8 +1,9 @@
 /**
- * WhatsApp (Cloud API) -> Webhook -> Zammad
- * Supports: text, image, video, audio (voice notes), document
- * + Outbound Support (Zammad -> WhatsApp)
- * + Auto Customer Creation & Chat Type Support
+ * WhatsApp (Cloud API) <-> Zammad (Bilateral)
+ * * Fixes:
+ * 1. Identity Separation (Customer vs Agent).
+ * 2. Real-time Outbound Replies (Zammad -> WhatsApp).
+ * 3. Correct Chat Bubble Rendering.
  */
 
 const express = require("express");
@@ -14,7 +15,7 @@ const app = express();
 app.use(bodyParser.json({ limit: "25mb" })); 
 
 // ====================================
-// إعدادات Zammad و WhatsApp
+// إعدادات النظام (تم الحفاظ على بياناتك)
 // ====================================
 const ZAMMAD_BASE_URL = "http://102.203.200.112"; 
 const ZAMMAD_TOKEN = "fk6ykJgBmcI9ILMhH1dPpEaETsQiU7tzJeaX3NWjnxl9w2OXLgRE-TlNz0YyF2w8";
@@ -23,20 +24,18 @@ const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquW
 const WHATSAPP_PHONE_ID = "1004684596056367";
 const GRAPH_VERSION = "v19.0"; 
 const ZAMMAD_GROUP = "Users";  
-const DEFAULT_CUSTOMER_ID = "1"; // سيستخدم فقط كاحتياطي في حال فشل إنشاء العميل
 const PORT = 10000; 
 const VERIFY_TOKEN = "my_verify_token"; 
 const META_APP_SECRET = ""; 
 
-// =============================
-// IN-MEMORY SESSION STATE
-// =============================
+// تخزين مؤقت للجلسات
 const users = {}; 
 
 // =============================
-// HELPERS
+// دوال مساعدة (HELPERS)
 // =============================
 
+// التحقق من توقيع ميتا (أمان)
 function verifyMetaSignature(req) {
   if (!META_APP_SECRET) return true;
   const signature = req.headers["x-hub-signature-256"];
@@ -47,71 +46,98 @@ function verifyMetaSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
+// إرسال رسالة إلى واتساب
 async function sendWhatsApp(payload) {
   if (!WHATSAPP_PHONE_ID) throw new Error("Missing WHATSAPP_PHONE_ID");
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_ID}/messages`;
-  await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-  });
+  
+  try {
+    await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (error) {
+    console.error("WhatsApp Send Error:", error.response ? error.response.data : error.message);
+  }
 }
 
+// تحميل الميديا من واتساب
 async function downloadMedia(mediaId) {
   if (!mediaId) return null;
-  const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-  });
-  const url = meta.data?.url;
-  const mime_type = meta.data?.mime_type;
-  if (!url || !mime_type) return null;
-  const bin = await axios.get(url, {
-    responseType: "arraybuffer",
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    maxContentLength: Infinity,
-    maxBodyLength: Infinity,
-  });
-  const buffer = Buffer.from(bin.data);
-  if (!buffer.length) return null;
-  let ext = mime_type.split("/")[1] || "bin";
-  if (mime_type === "audio/ogg") ext = "ogg";
-  if (mime_type === "audio/mpeg") ext = "mp3";
-  if (mime_type === "image/jpeg") ext = "jpg";
-  return { data: buffer.toString("base64"), mime_type, ext };
+  try {
+    const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    const url = meta.data?.url;
+    const mime_type = meta.data?.mime_type;
+    
+    if (!url || !mime_type) return null;
+
+    const bin = await axios.get(url, {
+      responseType: "arraybuffer",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+
+    const buffer = Buffer.from(bin.data);
+    let ext = mime_type.split("/")[1] || "bin";
+    if (mime_type.includes("audio")) ext = "mp3"; 
+    if (mime_type.includes("image")) ext = "jpg";
+
+    return { data: buffer.toString("base64"), mime_type, ext };
+  } catch (e) {
+    console.error("Download Media Error:", e.message);
+    return null;
+  }
 }
 
-// [جديد] البحث عن العميل أو إنشاؤه
+// =============================
+// [جديد] إدارة هوية العميل في Zammad
+// =============================
 async function getOrCreateCustomer(name, phone) {
   try {
-    // البحث باستخدام الهاتف
+    // 1. البحث عن المستخدم برقم الهاتف
     const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
 
     if (search.data && search.data.length > 0) {
-      return search.data[0].id; // العميل موجود
+      // العميل موجود، نرجع الـ ID الخاص به
+      return search.data[0].id;
     }
 
-    // إنشاء عميل جديد
+    // 2. العميل غير موجود، نقوم بإنشائه
+    // نستخدم ايميل وهمي لتفادي تضارب البيانات ولضمان إنشاء حساب "عميل" مستقل
+    const fakeEmail = `${phone}@whatsapp.local`; 
+    
     const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
       firstname: name,
-      lastname: "(WhatsApp)",
+      lastname: "(WhatsApp)", // تمييز الاسم
+      email: fakeEmail,
       phone: phone,
-      roles: ["Customer"]
+      roles: ["Customer"], // مهم جداً: تحديد الدور كعميل
+      active: true
     }, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
 
+    console.log(`User created for ${phone}: ID ${newUser.data.id}`);
     return newUser.data.id;
+
   } catch (err) {
-    console.error("Error creating/finding customer:", err.message);
-    return Number(DEFAULT_CUSTOMER_ID); // العودة للحساب الافتراضي عند الخطأ
+    console.error("Error in Customer Identity Logic:", err.response?.data || err.message);
+    // في أسوأ الأحوال، نعود للمستخدم رقم 1 (لكن هذا نادراً ما سيحدث الآن)
+    return 1;
   }
 }
 
-// [معدل] إنشاء التذكرة بمعرف العميل الصحيح ونوع chat
+// =============================
+// دوال التذاكر (محدثة)
+// =============================
+
 async function createZammadTicket({ name, from }) {
+  // نحصل على ID العميل الحقيقي
   const customerId = await getOrCreateCustomer(name, from);
 
   const res = await axios.post(
@@ -119,103 +145,102 @@ async function createZammadTicket({ name, from }) {
     {
       title: `WhatsApp - ${name} (${from})`,
       group: ZAMMAD_GROUP,
-      customer_id: customerId, // ربط التذكرة بالعميل الحقيقي
+      customer_id: customerId, // ربط التذكرة بالعميل الصحيح
       article: {
-        body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-        type: "chat", // [مهم] يظهر كشات وليس ملاحظة
+        body: `بداية محادثة جديدة من ${name}\nالرقم: ${from}`,
+        type: "chat", // يظهر كشات
         internal: false,
-        sender: "Customer", // تحديد المرسل كعميل
-        from: name 
+        sender: "Customer", // تحديد أن المرسل هو العميل
+        from: name,
+        to: "Support Team"
       },
     },
     {
-      headers: {
-        Authorization: `Token token=${ZAMMAD_TOKEN}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     }
   );
   return res.data?.id;
 }
 
-// [معدل] إضافة رد للتذكرة بنوع chat
 async function addZammadArticle(articlePayload) {
-  // التأكد من النوع وتحديد المرسل
+  // تثبيت نوع الرسالة كـ chat ومن العميل
   articlePayload.type = "chat";
   articlePayload.sender = "Customer";
-  
+
   await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
-    headers: {
-      Authorization: `Token token=${ZAMMAD_TOKEN}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` },
   });
 }
 
 // =============================
-// استقبال الردود من ZAMMAD (Outbound)
+// [Outbound] استقبال الردود من Zammad وإرسالها للواتساب
 // =============================
 app.post("/zammad/webhook", async (req, res) => {
   try {
     const { ticket, article } = req.body;
 
-    if (!article || article.internal === true) {
-      return res.status(200).send("Ignored");
-    }
+    // 1. فلترة: نريد فقط المقالات الجديدة، العامة، التي كتبها "Agent"
+    if (!article || article.internal === true) return res.send("Ignored (Internal)");
+    if (article.sender !== "Agent") return res.send("Ignored (Not Agent)");
+    if (article.type === "note") return res.send("Ignored (Note)");
 
-    if (article.sender === "Customer" || article.sender === "System") {
-      return res.status(200).send("Ignored");
-    }
-
+    // 2. استخراج رقم الهاتف من عنوان التذكرة
+    // العنوان المتوقع: WhatsApp - Name (123456789)
     const title = ticket.title || "";
     const phoneMatch = title.match(/\(([^)]+)\)/);
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
 
     if (!phoneNumber) {
-      return res.status(200).send("No phone found");
+      console.log("No phone number found in ticket title:", title);
+      return res.send("No phone");
     }
 
-    let messageBody = article.body || "";
-    messageBody = messageBody.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
+    // 3. تنظيف النص (Zammad يرسل HTML)
+    let body = article.body || "";
+    // تحويل <br> و <div> إلى أسطر جديدة
+    body = body.replace(/<br\s*\/?>/gi, "\n").replace(/<\/div>/gi, "\n").replace(/<div>/gi, "");
+    // حذف أي وسوم متبقية
+    body = body.replace(/<[^>]+>/g, "").trim();
 
-    if (!messageBody) return res.status(200).send("Empty body");
+    if (!body) return res.send("Empty body");
 
+    // 4. الإرسال للعميل
     await sendWhatsApp({
       messaging_product: "whatsapp",
       to: phoneNumber,
       type: "text",
-      text: { body: messageBody },
+      text: { body: body },
     });
 
-    console.log(`✅ Reply sent to ${phoneNumber}`);
+    console.log(`✅ Agent Reply Sent to ${phoneNumber}`);
     return res.status(200).send("Sent");
 
   } catch (error) {
-    console.error("Zammad Webhook Error:", error.message);
+    console.error("Zammad Outbound Error:", error.message);
     return res.status(500).send("Error");
   }
 });
 
 // =============================
-// WEBHOOK VERIFY (GET)
+// تحقق Webhook (Meta)
 // =============================
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  if (
+    req.query["hub.mode"] === "subscribe" &&
+    req.query["hub.verify_token"] === VERIFY_TOKEN
+  ) {
+    res.send(req.query["hub.challenge"]);
+  } else {
+    res.sendStatus(403);
   }
-  return res.sendStatus(403);
 });
 
 // =============================
-// WEBHOOK RECEIVE (POST)
+// استقبال رسائل الواتساب (Inbound)
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
-    if (!verifyMetaSignature(req)) return res.status(401).send("Invalid signature");
+    if (!verifyMetaSignature(req)) return res.sendStatus(403);
 
     const entry = req.body?.entry?.[0];
     const changes = entry?.changes?.[0];
@@ -227,21 +252,21 @@ app.post("/webhook", async (req, res) => {
 
     const msg = messages[0];
     const from = msg.from;
-    const contact = contacts?.[0];
-    const name = contact?.profile?.name || "مستخدم";
+    const name = contacts?.[0]?.profile?.name || "مستخدم واتساب";
 
+    // تهيئة حالة المستخدم
     if (!users[from]) users[from] = { greeted: false, ticketId: null, support: false };
     const user = users[from];
 
-    let replyId = "";
+    // استخراج محتوى الرسالة
     let text = "";
-
+    let replyId = "";
+    if (msg.type === "text") text = msg.text.body;
     if (msg.type === "interactive") {
-      replyId = msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
+      replyId = msg.interactive.list_reply?.id || msg.interactive.button_reply?.id;
     }
-    if (msg.type === "text") text = msg.text?.body || "";
 
-    // الرسالة الأولى
+    // 1. رسالة الترحيب (للمرة الأولى)
     if (!user.greeted) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -249,106 +274,94 @@ app.post("/webhook", async (req, res) => {
         type: "interactive",
         interactive: {
           type: "list",
-          body: {
-            text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nكيف نقدر نساعدك؟ اختر من الخيارات 👇`,
-          },
+          body: { text: `أهلاً بك يا ${name} في خدمة العملاء 👋\nكيف يمكننا مساعدتك اليوم؟` },
           action: {
-            button: "اختر",
+            button: "القائمة",
             sections: [
               {
-                title: "الخدمات",
+                title: "اختر الخدمة",
                 rows: [
-                  { id: "knowledge", title: "📘 الأسئلة الشائعة" },
-                  { id: "support", title: "🧑‍💼 الدعم الفني" },
-                ],
-              },
-            ],
-          },
-        },
+                  { id: "support", title: "تحدث مع الدعم 🧑‍💻" },
+                  { id: "knowledge", title: "الأسئلة الشائعة 📘" }
+                ]
+              }
+            ]
+          }
+        }
       });
       user.greeted = true;
       return res.sendStatus(200);
     }
 
-    // الأسئلة الشائعة
+    // 2. معالجة خيار "الأسئلة الشائعة"
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp",
         to: from,
-        type: "interactive",
-        interactive: {
-          type: "cta_url",
-          body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة والمشاكل الشائعة" },
-          action: {
-            name: "cta_url",
-            parameters: { display_text: "فتح الأسئلة الشائعة", url: KNOWLEDGE_LINK },
-          },
-        },
+        type: "text",
+        text: { body: `يمكنك زيارة مركز المساعدة عبر الرابط التالي:\n${KNOWLEDGE_LINK}` }
       });
       return res.sendStatus(200);
     }
 
-    // الدعم الفني
+    // 3. معالجة خيار "الدعم الفني" (فتح تذكرة)
     if (replyId === "support") {
       if (!user.ticketId) {
+        // إنشاء تذكرة جديدة
         user.ticketId = await createZammadTicket({ name, from });
         user.support = true;
       }
-
       await sendWhatsApp({
         messaging_product: "whatsapp",
         to: from,
         type: "text",
-        text: {
-          body:
-            "✍️ تفضل بكتابة رسالتك أو سؤالك أو إرسال المرفقات، " +
-            "وسيقوم فريقنا بالرد عليك في أقرب وقت ممكن.",
-        },
+        text: { body: "تم فتح تذكرة دعم لك ✅\nتفضل بكتابة مشكلتك الآن، وسيرد عليك أحد الموظفين قريباً." }
       });
       return res.sendStatus(200);
     }
 
-    // رسائل الدعم -> Zammad
+    // 4. استقبال رسائل المحادثة وإرسالها للتذكرة
     if (user.support && user.ticketId) {
-      // تعديل: تمرير اسم المرسل ليظهر بشكل صحيح
-      const articlePayload = { 
+      const payload = { 
         ticket_id: user.ticketId, 
-        type: "chat", // مهم جداً
-        internal: false, 
-        sender: "Customer",
-        from: name, // يظهر اسم المرسل في Zammad
-        body: "" 
+        internal: false,
+        from: name 
       };
 
-      if (msg.type === "text") articlePayload.body = text || "(رسالة نصية فارغة)";
+      if (msg.type === "text") {
+        payload.body = text;
+      } 
       else if (["image", "video", "audio", "document"].includes(msg.type)) {
-        const mediaId = msg[msg.type]?.id;
-        const mediaData = await downloadMedia(mediaId);
-
-        if (mediaData?.data) {
-          articlePayload.body = `📎 مرفق (${msg.type})`;
-          articlePayload.attachments = [
-            { filename: `${msg.type}.${mediaData.ext}`, data: mediaData.data, "mime-type": mediaData.mime_type },
-          ];
+        const mediaId = msg[msg.type].id;
+        const media = await downloadMedia(mediaId);
+        if (media) {
+          payload.body = `مرفق جديد: ${msg.type}`;
+          payload.attachments = [{ 
+            filename: `${msg.type}_${Date.now()}.${media.ext}`, 
+            data: media.data, 
+            "mime-type": media.mime_type 
+          }];
         } else {
-          articlePayload.body = `📎 تعذّر تحميل المرفق (${msg.type}) من WhatsApp`;
+          payload.body = "مرفق (فشل التحميل)";
         }
-      } else articlePayload.body = "نوع رسالة غير مدعوم";
+      } else {
+        payload.body = "رسالة من نوع غير مدعوم";
+      }
 
-      await addZammadArticle(articlePayload);
+      await addZammadArticle(payload);
       return res.sendStatus(200);
     }
 
     return res.sendStatus(200);
-  } catch (err) {
-    console.error("Webhook error:", err?.response?.data || err.message);
-    return res.sendStatus(200);
+
+  } catch (e) {
+    console.error("Webhook Error:", e.message);
+    res.sendStatus(200);
   }
 });
 
-// Health check
-app.get("/", (req, res) => res.send("Webhook running ✅"));
-
+// تشغيل السيرفر
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🔗 Zammad Webhook URL: http://YOUR_IP:${PORT}/zammad/webhook`);
 });
