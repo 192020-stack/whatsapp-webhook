@@ -2,7 +2,8 @@
  * WhatsApp (Cloud API) -> Webhook -> Zammad
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
- * [تعديل]: إرسال النص كمرفق (Caption) مع الصور لضمان وصول الرسالة كاملة
+ * + Auto Customer Creation & Chat Type Support
+ * [Full Complete Code - نسخة كاملة بدون نقصان]
  */
 
 const express = require("express");
@@ -12,6 +13,7 @@ const crypto = require("crypto");
 const FormData = require("form-data");
 
 const app = express();
+// زيادة حجم الطلب لاستيعاب الصور المرفوعة
 app.use(bodyParser.json({ limit: "25mb" })); 
 
 // ====================================
@@ -29,6 +31,9 @@ const PORT = 10000;
 const VERIFY_TOKEN = "my_verify_token"; 
 const META_APP_SECRET = ""; 
 
+// =============================
+// IN-MEMORY SESSION STATE
+// =============================
 const users = {}; 
 
 // =============================
@@ -45,53 +50,72 @@ function verifyMetaSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
+// دالة رفع الميديا لواتساب مع سجل تتبع
 async function uploadMediaToWhatsApp(buffer, fileName, mimeType) {
+  console.log(`🚀 [Media Upload] Starting upload: ${fileName} (${mimeType})`);
   const form = new FormData();
   form.append('file', buffer, { filename: fileName, contentType: mimeType });
   form.append('messaging_product', 'whatsapp');
 
-  const res = await axios.post(
-    `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_ID}/media`,
-    form,
-    {
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      },
-    }
-  );
-  return res.data.id;
+  try {
+    const res = await axios.post(
+      `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_ID}/media`,
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        },
+      }
+    );
+    console.log(`✅ [Media Upload] ID: ${res.data.id}`);
+    return res.data.id;
+  } catch (error) {
+    console.error(`❌ [Media Upload] Error:`, error.response?.data || error.message);
+    throw error;
+  }
 }
 
 async function sendWhatsApp(payload) {
-  if (!WHATSAPP_PHONE_ID) throw new Error("Missing WHATSAPP_PHONE_ID");
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${WHATSAPP_PHONE_ID}/messages`;
-  await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-  });
+  try {
+    await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+    console.log(`✅ [WhatsApp Send] Message sent successfully`);
+  } catch (error) {
+    console.error(`❌ [WhatsApp Send] Error:`, error.response?.data || error.message);
+  }
 }
 
 async function downloadMedia(mediaId) {
-  if (!mediaId) return null;
-  const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-  });
-  const url = meta.data?.url;
-  const mime_type = meta.data?.mime_type;
-  if (!url || !mime_type) return null;
-  const bin = await axios.get(url, {
-    responseType: "arraybuffer",
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    maxContentLength: Infinity,
-    maxBodyLength: Infinity,
-  });
-  const buffer = Buffer.from(bin.data);
-  if (!buffer.length) return null;
-  let ext = mime_type.split("/")[1] || "bin";
-  return { data: buffer.toString("base64"), mime_type, ext };
+  console.log(`📥 [Media Download] ID: ${mediaId}`);
+  try {
+    const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    const url = meta.data?.url;
+    const mime_type = meta.data?.mime_type;
+    if (!url || !mime_type) return null;
+
+    const bin = await axios.get(url, {
+      responseType: "arraybuffer",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    const buffer = Buffer.from(bin.data);
+    let ext = mime_type.split("/")[1] || "bin";
+    if (mime_type === "audio/ogg") ext = "ogg";
+    if (mime_type === "audio/mpeg") ext = "mp3";
+    if (mime_type === "image/jpeg") ext = "jpg";
+    
+    return { data: buffer.toString("base64"), mime_type, ext };
+  } catch (err) {
+    console.error(`❌ [Media Download] Error:`, err.message);
+    return null;
+  }
 }
 
 async function getOrCreateCustomer(name, phone) {
@@ -99,45 +123,56 @@ async function getOrCreateCustomer(name, phone) {
     const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
+
     if (search.data && search.data.length > 0) return search.data[0].id;
+
     const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
       firstname: name, lastname: "(WhatsApp)", phone: phone, roles: ["Customer"]
     }, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
+
     return newUser.data.id;
   } catch (err) {
-    console.error("Error creating/finding customer:", err.message);
     return Number(DEFAULT_CUSTOMER_ID); 
   }
 }
 
 async function createZammadTicket({ name, from }) {
   const customerId = await getOrCreateCustomer(name, from);
-  const res = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/tickets`, {
-    title: `WhatsApp - ${name} (${from})`,
-    group: ZAMMAD_GROUP,
-    customer_id: customerId, 
-    article: {
-      body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-      type: "chat", internal: false, sender: "Customer", from: name 
+  const res = await axios.post(
+    `${ZAMMAD_BASE_URL}/api/v1/tickets`,
+    {
+      title: `WhatsApp - ${name} (${from})`,
+      group: ZAMMAD_GROUP,
+      customer_id: customerId, 
+      article: {
+        body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
+        type: "chat", internal: false, sender: "Customer", from: name 
+      },
     },
-  }, { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` } });
+    { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
+  );
   return res.data?.id;
 }
 
 async function addZammadArticle(articlePayload) {
   articlePayload.type = "chat";
   articlePayload.sender = "Customer";
-  await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
-    headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" }
-  });
+  try {
+    await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
+      headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.error("❌ [Zammad Add Article] Error:", err.message);
+  }
 }
 
 // ============================================================
-// استقبال الردود من ZAMMAD (Outbound) - النسخة المعدلة لدمج المرفق مع النص
+// استقبال الردود من ZAMMAD (Outbound) - إرسال الصور للعميل
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
+  console.log("📨 [Webhook Zammad] Event received");
   try {
     const { ticket, article } = req.body;
 
@@ -146,47 +181,40 @@ app.post("/zammad/webhook", async (req, res) => {
 
     const phoneMatch = (ticket.title || "").match(/\(([^)]+)\)/);
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
+
     if (!phoneNumber) return res.status(200).send("No phone found");
 
-    // تجهيز النص وتنظيفه
     let messageBody = (article.body || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
-    // 1. التعامل مع المرفقات
+    // التعامل مع المرفقات وإرسالها مع النص كـ Caption
     if (article.attachments && article.attachments.length > 0) {
       for (const att of article.attachments) {
         try {
-          const response = await axios.get(
-            `${ZAMMAD_BASE_URL}/api/v1/ticket_attachment_download/${ticket.id}/${article.id}/${att.id}`,
-            { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }, responseType: 'arraybuffer' }
-          );
+          const downloadUrl = `${ZAMMAD_BASE_URL}/api/v1/ticket_attachment_download/${ticket.id}/${article.id}/${att.id}`;
+          const response = await axios.get(downloadUrl, {
+            headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` },
+            responseType: 'arraybuffer'
+          });
 
           const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename, att.content_type);
 
           let type = "document";
           if (att.content_type.includes("image")) type = "image";
           else if (att.content_type.includes("video")) type = "video";
+          else if (att.content_type.includes("audio")) type = "audio";
 
-          // إرسال المرفق مع النص كـ Caption
           await sendWhatsApp({
             messaging_product: "whatsapp",
             to: phoneNumber,
             type: type,
-            [type]: { 
-              id: mediaId,
-              caption: messageBody // هنا يتم دمج النص مع المرفق
-            }
+            [type]: { id: mediaId, caption: messageBody }
           });
-
-          // تصفير النص بعد أول مرفق لمنع تكراره إذا كانت هناك مرفقات متعددة
-          messageBody = ""; 
+          messageBody = ""; // مسح النص لكي لا يتكرر مع المرفق الثاني
         } catch (mediaErr) {
-          console.error("❌ Media Send Error:", mediaErr.message);
+          console.error("❌ [Outbound Media Error]:", mediaErr.message);
         }
       }
-    }
-
-    // 2. إذا تبقى نص (في حال عدم وجود مرفقات)، نرسله كرسالة نصية عادية
-    if (messageBody) {
+    } else if (messageBody) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
         to: phoneNumber,
@@ -195,11 +223,9 @@ app.post("/zammad/webhook", async (req, res) => {
       });
     }
 
-    console.log(`✅ Reply processed for ${phoneNumber}`);
     return res.status(200).send("Sent");
-
   } catch (error) {
-    console.error("Zammad Webhook Error:", error.message);
+    console.error("❌ [Global Outbound Error]:", error.message);
     return res.status(500).send("Error");
   }
 });
@@ -216,7 +242,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =============================
-// WEBHOOK RECEIVE (POST)
+// WEBHOOK RECEIVE (POST) - استقبال من الواتساب
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -225,25 +251,39 @@ app.post("/webhook", async (req, res) => {
     const entry = req.body?.entry?.[0];
     const value = entry?.changes?.[0]?.value;
     const messages = value?.messages;
+    const contacts = value?.contacts;
+
     if (!messages || !messages.length) return res.sendStatus(200);
 
     const msg = messages[0];
     const from = msg.from;
-    const name = value?.contacts?.[0]?.profile?.name || "مستخدم";
+    const name = contacts?.[0]?.profile?.name || "مستخدم";
 
     if (!users[from]) users[from] = { greeted: false, ticketId: null, support: false };
     const user = users[from];
 
-    let replyId = msg.type === "interactive" ? (msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id) : "";
-    let text = msg.type === "text" ? msg.text?.body : "";
+    let replyId = "";
+    let text = "";
 
+    if (msg.type === "interactive") {
+      replyId = msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
+    }
+    if (msg.type === "text") text = msg.text?.body || "";
+
+    // منطق الرد التلقائي والقائمة
     if (!user.greeted) {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "list",
           body: { text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nكيف نقدر نساعدك؟ اختر من الخيارات 👇` },
-          action: { button: "اختر", sections: [{ title: "الخدمات", rows: [{ id: "knowledge", title: "📘 الأسئلة الشائعة" }, { id: "support", title: "🧑‍💼 الدعم الفني" }] }] }
+          action: {
+            button: "اختر",
+            sections: [{
+              title: "الخدمات",
+              rows: [{ id: "knowledge", title: "📘 الأسئلة الشائعة" }, { id: "support", title: "🧑‍💼 الدعم الفني" }]
+            }]
+          }
         }
       });
       user.greeted = true;
@@ -253,32 +293,55 @@ app.post("/webhook", async (req, res) => {
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
-        interactive: { type: "cta_url", body: { text: "📘 الأسئلة الشائعة" }, action: { name: "cta_url", parameters: { display_text: "فتح الأسئلة الشائعة", url: KNOWLEDGE_LINK } } }
+        interactive: {
+          type: "cta_url",
+          body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة الشائعة" },
+          action: { name: "cta_url", parameters: { display_text: "فتح الأسئلة", url: KNOWLEDGE_LINK } }
+        }
       });
-    } else if (replyId === "support") {
+      return res.sendStatus(200);
+    }
+
+    if (replyId === "support") {
       if (!user.ticketId) {
         user.ticketId = await createZammadTicket({ name, from });
         user.support = true;
       }
-      await sendWhatsApp({ messaging_product: "whatsapp", to: from, type: "text", text: { body: "✍️ تفضل بكتابة رسالتك وسنقوم بالرد عليك." } });
-    } else if (user.support && user.ticketId) {
-      const articlePayload = { ticket_id: user.ticketId, body: "" };
-      if (msg.type === "text") articlePayload.body = text || "(رسالة نصية فارغة)";
-      else if (["image", "video", "audio", "document"].includes(msg.type)) {
+      await sendWhatsApp({
+        messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "✍️ تفضل بكتابة رسالتك وسنقوم بالرد عليك في أقرب وقت." }
+      });
+      return res.sendStatus(200);
+    }
+
+    // إرسال الرسائل من واتساب إلى Zammad
+    if (user.support && user.ticketId) {
+      const articlePayload = { ticket_id: user.ticketId, from: name, body: "" };
+
+      if (msg.type === "text") {
+        articlePayload.body = text || "(رسالة نصية)";
+      } else if (["image", "video", "audio", "document"].includes(msg.type)) {
         const mediaData = await downloadMedia(msg[msg.type]?.id);
         if (mediaData?.data) {
           articlePayload.body = msg[msg.type]?.caption || `📎 مرفق (${msg.type})`;
-          articlePayload.attachments = [{ filename: `${msg.type}.${mediaData.ext}`, data: mediaData.data, "mime-type": mediaData.mime_type }];
+          articlePayload.attachments = [{
+            filename: `${msg.type}.${mediaData.ext}`,
+            data: mediaData.data,
+            "mime-type": mediaData.mime_type
+          }];
         }
       }
       await addZammadArticle(articlePayload);
     }
     return res.sendStatus(200);
   } catch (err) {
+    console.error("❌ Webhook Receive Error:", err.message);
     return res.sendStatus(200);
   }
 });
 
-// Health check & Server Start
 app.get("/", (req, res) => res.send("Webhook running ✅"));
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
