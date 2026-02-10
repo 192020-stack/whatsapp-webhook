@@ -170,7 +170,7 @@ async function addZammadArticle(articlePayload) {
 }
 
 // =============================
-// استقبال الردود من ZAMMAD (Outbound) - تم تعديل جزئية الصور هنا فقط
+// استقبال الردود من ZAMMAD (Outbound) - تم التعديل هنا لضمان وصول المرفق مع النص
 // =============================
 app.post("/zammad/webhook", async (req, res) => {
   try {
@@ -185,17 +185,15 @@ app.post("/zammad/webhook", async (req, res) => {
 
     if (!phoneNumber) return res.status(200).send("No phone found");
 
-    // --- بداية تعديل الصور (Outbound) ---
+    // 1. إرسال المرفقات أولاً (صور، فيديوهات، الخ)
     if (article.attachments && article.attachments.length > 0) {
       for (const att of article.attachments) {
         try {
-          // تحميل الملف من Zammad أولاً
           const response = await axios.get(
             `${ZAMMAD_BASE_URL}/api/v1/ticket_attachment_download/${ticket.id}/${article.id}/${att.id}`,
             { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }, responseType: 'arraybuffer' }
           );
 
-          // رفع الملف لواتساب للحصول على media_id
           const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename, att.content_type);
 
           let type = "document";
@@ -214,8 +212,8 @@ app.post("/zammad/webhook", async (req, res) => {
         }
       }
     }
-    // --- نهاية تعديل الصور ---
 
+    // 2. إرسال النص (كـرسالة مستقلة لضمان وصولها مع المرفقات)
     let messageBody = article.body || "";
     messageBody = messageBody.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
