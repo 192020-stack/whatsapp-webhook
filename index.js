@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - نسخة كاملة بدون نقصان]
+ * [Full Complete Code - النسخة النهائية الشاملة والمصلحة]
  */
 
 const express = require("express");
@@ -11,10 +11,11 @@ const bodyParser = require("body-parser");
 const axios = require("axios");
 const crypto = require("crypto");
 const FormData = require("form-data");
+const path = require("path"); // لإستخراج امتداد الملف وتحديد النوع
 
 const app = express();
-// زيادة حجم الطلب لاستيعاب الصور المرفوعة
-app.use(bodyParser.json({ limit: "25mb" })); 
+// زيادة حجم الطلب لاستيعاب الصور والمرفقات المرفوعة
+app.use(bodyParser.json({ limit: "50mb" })); 
 
 // ====================================
 // إعدادات Zammad و WhatsApp
@@ -40,6 +41,27 @@ const users = {};
 // HELPERS
 // =============================
 
+// دالة لتخمين نوع الملف بناءً على الامتداد لحل مشكلة الخطأ 400 في واتساب
+function getMimeType(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  const map = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.mp4': 'video/mp4',
+    '.3gp': 'video/3gpp',
+    '.mpeg': 'audio/mpeg',
+    '.mp3': 'audio/mpeg',
+    '.ogg': 'audio/ogg',
+    '.opus': 'audio/ogg; codecs=opus',
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.txt': 'text/plain'
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
 function verifyMetaSignature(req) {
   if (!META_APP_SECRET) return true;
   const signature = req.headers["x-hub-signature-256"];
@@ -50,9 +72,10 @@ function verifyMetaSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
-// دالة رفع الميديا لواتساب مع سجل تتبع
-async function uploadMediaToWhatsApp(buffer, fileName, mimeType) {
-  console.log(`🚀 [Media Upload] Starting upload: ${fileName} (${mimeType})`);
+// دالة رفع الميديا لواتساب مع تحديد نوع المحتوى بدقة
+async function uploadMediaToWhatsApp(buffer, fileName) {
+  const mimeType = getMimeType(fileName);
+  console.log(`🚀 [Media Upload] Starting upload: ${fileName} as ${mimeType}`);
   const form = new FormData();
   form.append('file', buffer, { filename: fileName, contentType: mimeType });
   form.append('messaging_product', 'whatsapp');
@@ -167,8 +190,9 @@ async function addZammadArticle(articlePayload) {
     console.error("❌ [Zammad Add Article] Error:", err.message);
   }
 }
+
 // ============================================================
-// [النسخة النهائية الشاملة] - دعم الصور، الفيديو، والصوت (WhatsApp Outbound)
+// [النسخة النهائية] - دعم الصور، الفيديو، والصوت (Zammad -> WhatsApp)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -190,6 +214,7 @@ app.post("/zammad/webhook", async (req, res) => {
       
       for (const att of article.attachments) {
         try {
+          // استخدام المسار البديل الناجح
           const successUrl = `${ZAMMAD_BASE_URL}/api/v1/attachments/${att.id}?ticket_id=${ticket.id}&article_id=${article.id}`;
           console.log(`☁️ Downloading attachment: ${att.filename}`);
 
@@ -198,18 +223,14 @@ app.post("/zammad/webhook", async (req, res) => {
             responseType: 'arraybuffer'
           });
 
-          const contentType = att.content_type || "application/octet-stream";
-          const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename, contentType);
+          // رفع الميديا مع تحديد النوع الصحيح
+          const mediaId = await uploadMediaToWhatsApp(Buffer.from(response.data), att.filename);
+          const mimeType = getMimeType(att.filename);
 
-          // تحديد نوع الوسائط لواتساب بناءً على الـ Content Type
-          let mediaType = "document"; // الافتراضي ملف
-          if (contentType.includes("image")) {
-            mediaType = "image";
-          } else if (contentType.includes("video")) {
-            mediaType = "video";
-          } else if (contentType.includes("audio")) {
-            mediaType = "audio";
-          }
+          let mediaType = "document";
+          if (mimeType.includes("image")) mediaType = "image";
+          else if (mimeType.includes("video")) mediaType = "video";
+          else if (mimeType.includes("audio")) mediaType = "audio";
 
           const payload = {
             messaging_product: "whatsapp",
@@ -218,10 +239,10 @@ app.post("/zammad/webhook", async (req, res) => {
             [mediaType]: { id: mediaId }
           };
 
-          // إضافة Caption للصور والفيديو فقط (الواتساب لا يدعم Caption للصوت)
+          // إضافة Caption للصور والفيديو فقط
           if ((mediaType === "image" || mediaType === "video") && messageBody) {
             payload[mediaType].caption = messageBody;
-            messageBody = ""; // تصفير النص لكي لا يرسل مرة أخرى
+            messageBody = ""; 
           }
 
           await sendWhatsApp(payload);
@@ -233,7 +254,7 @@ app.post("/zammad/webhook", async (req, res) => {
       }
     } 
 
-    // إرسال ما تبقى من النص كرسالة منفصلة إذا لم يرسل كـ Caption
+    // إرسال ما تبقى من النص كرسالة منفصلة
     if (messageBody) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -290,7 +311,6 @@ app.post("/webhook", async (req, res) => {
     }
     if (msg.type === "text") text = msg.text?.body || "";
 
-    // منطق الرد التلقائي والقائمة
     if (!user.greeted) {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
@@ -334,7 +354,6 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // إرسال الرسائل من واتساب إلى Zammad
     if (user.support && user.ticketId) {
       const articlePayload = { ticket_id: user.ticketId, from: name, body: "" };
 
