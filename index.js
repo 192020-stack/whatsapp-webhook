@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - النسخة النهائية الشاملة والمصلحة]
+ * [Full Complete Code - النسخة الكاملة المعدلة بنظام المنظومات]
  */
 
 const express = require("express");
@@ -311,49 +311,86 @@ app.post("/webhook", async (req, res) => {
     }
     if (msg.type === "text") text = msg.text?.body || "";
 
-    if (!user.greeted) {
+    // 1. القائمة الرئيسية (اختيار المنظومة)
+    if (!user.greeted || text.toLowerCase() === "رجوع") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "list",
-          body: { text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nكيف نقدر نساعدك؟ اختر من الخيارات 👇` },
+          body: { text: `مرحبًا ${name} 👋\n\nأهلًا بك في *رقمنة للخدمات التقنية*\nالرجاء اختيار المنظومة المطلوبة من القائمة 👇` },
           action: {
-            button: "اختر",
+            button: "اختر المنظومة",
             sections: [{
-              title: "الخدمات",
-              rows: [{ id: "knowledge", title: "📘 الأسئلة الشائعة" }, { id: "support", title: "🧑‍💼 الدعم الفني" }]
+              title: "المنظومات",
+              rows: [
+                { id: "tajer_libya", title: "🏦 منظومة التاجر الليبي", description: "الخدمات والدعم الفني" }
+                // مستقبلاً يمكنك إضافة rows هنا للمنظومات الأخرى
+              ]
             }]
           }
         }
       });
       user.greeted = true;
+      user.support = false; // تصفير الدعم عند العودة للمنيو
       return res.sendStatus(200);
     }
 
+    // 2. قائمة خدمات منظومة التاجر الليبي
+    if (replyId === "tajer_libya") {
+      await sendWhatsApp({
+        messaging_product: "whatsapp", to: from, type: "interactive",
+        interactive: {
+          type: "list",
+          body: { text: `🏦 *منظومة التاجر الليبي*\n\nكيف يمكننا مساعدتك؟ اختر من الخيارات التالية 👇` },
+          action: {
+            button: "اختر الخدمة",
+            sections: [{
+              title: "خدمات المنظومة",
+              rows: [
+                { id: "knowledge", title: "📘 الأسئلة الشائعة", description: "دليل الاستخدام والحلول" },
+                { id: "support", title: "🧑‍💼 الدعم الفني", description: "التواصل مع الموظف المختص" },
+                { id: "back_main", title: "🔙 الرجوع للمنيو الرئيسي", description: "اختيار منظومة أخرى" }
+              ]
+            }]
+          }
+        }
+      });
+      return res.sendStatus(200);
+    }
+
+    // 3. معالجة خيار الرجوع للمنيو الرئيسي
+    if (replyId === "back_main") {
+      user.greeted = false; // سيؤدي هذا لإرسال القائمة الأولى في الطلب القادم
+      return res.status(200).send("Back Triggered");
+    }
+
+    // 4. معالجة الأسئلة الشائعة
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
           type: "cta_url",
-          body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة الشائعة" },
+          body: { text: "📘 اضغط الزر بالأسفل للاطلاع على الأسئلة الشائعة لمنظومة التاجر الليبي" },
           action: { name: "cta_url", parameters: { display_text: "فتح الأسئلة", url: KNOWLEDGE_LINK } }
         }
       });
       return res.sendStatus(200);
     }
 
+    // 5. معالجة الدعم الفني
     if (replyId === "support") {
       if (!user.ticketId) {
-        user.ticketId = await createZammadTicket({ name, from });
+        user.ticketId = await createZammadTicket({ name: `${name} (التاجر الليبي)`, from });
         user.support = true;
       }
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: "✍️ تفضل بكتابة رسالتك وسنقوم بالرد عليك في أقرب وقت." }
+        text: { body: "✍️ تفضل بكتابة رسالتك بخصوص منظومة التاجر الليبي وسنقوم بالرد عليك." }
       });
       return res.sendStatus(200);
     }
 
+    // 6. إرسال الرسائل من واتساب إلى Zammad (دعم الميديا بالكامل)
     if (user.support && user.ticketId) {
       const articlePayload = { ticket_id: user.ticketId, from: name, body: "" };
 
