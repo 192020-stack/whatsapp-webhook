@@ -1,9 +1,8 @@
 /**
  * WhatsApp (Cloud API) -> Webhook -> Zammad
- * Supports: text, image, video, audio, document
- * Fixes:
- * 1. Sender Identity (Customer instead of Agent/AY) using X-On-Behalf-Of
- * 2. Preserved all texts and buttons as requested.
+ * Supports: text, image, video, audio (voice notes), document
+ * + Outbound Support (Zammad -> WhatsApp)
+ * + Auto Customer Creation & Chat Type Support
  */
 
 const express = require("express");
@@ -24,7 +23,7 @@ const WHATSAPP_TOKEN = "EAA4bHf77siABQt0Nqf8trAwSwv5XL6E0NA0Xp1YbWnIDvUOa47PnquW
 const WHATSAPP_PHONE_ID = "1004684596056367";
 const GRAPH_VERSION = "v19.0"; 
 const ZAMMAD_GROUP = "Users";  
-const DEFAULT_CUSTOMER_ID = "1"; 
+const DEFAULT_CUSTOMER_ID = "1"; // سيستخدم فقط كاحتياطي في حال فشل إنشاء العميل
 const PORT = 10000; 
 const VERIFY_TOKEN = "my_verify_token"; 
 const META_APP_SECRET = ""; 
@@ -82,7 +81,7 @@ async function downloadMedia(mediaId) {
   return { data: buffer.toString("base64"), mime_type, ext };
 }
 
-// [معدل] البحث عن العميل أو إنشاؤه مع حل مشكلة الإيميل
+// [جديد] البحث عن العميل أو إنشاؤه
 async function getOrCreateCustomer(name, phone) {
   try {
     const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
@@ -93,16 +92,11 @@ async function getOrCreateCustomer(name, phone) {
       return search.data[0].id; 
     }
 
-    // استخدام نطاق محلي لتفادي مشاكل البريد
-    const fakeEmail = `${phone}@whatsapp.local`;
-
     const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
       firstname: name,
       lastname: "(WhatsApp)",
-      email: fakeEmail, 
       phone: phone,
-      roles: ["Customer"],
-      active: true
+      roles: ["Customer"]
     }, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
@@ -110,11 +104,11 @@ async function getOrCreateCustomer(name, phone) {
     return newUser.data.id;
   } catch (err) {
     console.error("Error creating/finding customer:", err.message);
-    return Number(DEFAULT_CUSTOMER_ID); 
+    return Number(DEFAULT_CUSTOMER_ID);
   }
 }
 
-// [معدل جذري] إضافة Header لإجبار Zammad على اعتماد هوية العميل
+// [معدل] إنشاء التذكرة بمعرف العميل الصحيح ونوع chat مع الهوية
 async function createZammadTicket({ name, from }) {
   const customerId = await getOrCreateCustomer(name, from);
 
@@ -123,12 +117,12 @@ async function createZammadTicket({ name, from }) {
     {
       title: `WhatsApp - ${name} (${from})`,
       group: ZAMMAD_GROUP,
-      customer_id: customerId,
+      customer_id: customerId, 
       article: {
         body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-        type: "chat",
+        type: "chat", 
         internal: false,
-        sender: "Customer",
+        sender: "Customer", 
         from: name 
       },
     },
@@ -136,16 +130,14 @@ async function createZammadTicket({ name, from }) {
       headers: {
         Authorization: `Token token=${ZAMMAD_TOKEN}`,
         "Content-Type": "application/json",
-        "X-On-Behalf-Of": customerId // <--- الحل: هذا السطر يجعل الرسالة تظهر باسم العميل
+        "X-On-Behalf-Of": customerId // لفتح إمكانية الرد للايجنت
       },
     }
   );
-  
-  // نرجع الـ ID الخاص بالعميل أيضاً لنستخدمه في الرسائل التالية
-  return { ticketId: res.data?.id, customerId: customerId };
+  return { ticketId: res.data?.id, customerId };
 }
 
-// [معدل جذري] استقبال customerId لإرسال الرسالة باسمه
+// [معدل] إضافة رد للتذكرة بنوع chat مع الهوية
 async function addZammadArticle(articlePayload, customerId) {
   articlePayload.type = "chat";
   articlePayload.sender = "Customer";
@@ -154,7 +146,7 @@ async function addZammadArticle(articlePayload, customerId) {
     headers: {
       Authorization: `Token token=${ZAMMAD_TOKEN}`,
       "Content-Type": "application/json",
-      "X-On-Behalf-Of": customerId // <--- الحل: تسجيل الرسالة باسم العميل
+      "X-On-Behalf-Of": customerId // لضمان ظهور الرسالة من طرف الزبون
     },
   });
 }
@@ -237,7 +229,6 @@ app.post("/webhook", async (req, res) => {
     const contact = contacts?.[0];
     const name = contact?.profile?.name || "مستخدم";
 
-    // تهيئة الجلسة
     if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false };
     const user = users[from];
 
@@ -249,7 +240,7 @@ app.post("/webhook", async (req, res) => {
     }
     if (msg.type === "text") text = msg.text?.body || "";
 
-    // الرسالة الأولى (تم الحفاظ على النص كما هو)
+    // الرسالة الأولى
     if (!user.greeted) {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -278,7 +269,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // الأسئلة الشائعة (تم الحفاظ على الزر والرابط كما هو)
+    // الأسئلة الشائعة
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp",
@@ -299,10 +290,9 @@ app.post("/webhook", async (req, res) => {
     // الدعم الفني
     if (replyId === "support") {
       if (!user.ticketId) {
-        // إنشاء التذكرة والحصول على الـ ID الخاص بالعميل
-        const result = await createZammadTicket({ name, from });
-        user.ticketId = result.ticketId;
-        user.customerId = result.customerId; // حفظ ID العميل
+        const ticketData = await createZammadTicket({ name, from });
+        user.ticketId = ticketData.ticketId;
+        user.customerId = ticketData.customerId;
         user.support = true;
       }
 
@@ -321,11 +311,6 @@ app.post("/webhook", async (req, res) => {
 
     // رسائل الدعم -> Zammad
     if (user.support && user.ticketId) {
-      // التأكد من وجود customerId
-      if (!user.customerId) {
-         user.customerId = await getOrCreateCustomer(name, from);
-      }
-
       const articlePayload = { 
         ticket_id: user.ticketId, 
         type: "chat", 
@@ -350,7 +335,6 @@ app.post("/webhook", async (req, res) => {
         }
       } else articlePayload.body = "نوع رسالة غير مدعوم";
 
-      // نمرر customerId للدالة ليتم استخدامه في الهيدر
       await addZammadArticle(articlePayload, user.customerId);
       return res.sendStatus(200);
     }
