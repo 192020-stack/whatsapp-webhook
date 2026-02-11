@@ -384,7 +384,7 @@ app.post("/webhook", async (req, res) => {
       user.support = true;
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: "✍️ تفضل بكتابة رسالتك وسنقوم بالرد عليك في أقرب وقت." }
+        text: {body: "✅ تم فتح تذكرة بنجاح.\n\nالرجاء كتابة رسالتك أو طلبك الآن، وسيتم الرد عليك في أقرب وقت." }
       });
       return res.sendStatus(200);
     }
