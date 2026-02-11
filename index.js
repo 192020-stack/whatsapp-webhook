@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - النسخة الشاملة والمطولة مع إصلاح هوية المرسل]
+ * [Full Complete Code - النسخة الشاملة مع إصلاح القوائم والرجوع]
  */
 
 const express = require("express");
@@ -11,7 +11,7 @@ const bodyParser = require("body-parser");
 const axios = require("axios");
 const crypto = require("crypto");
 const FormData = require("form-data");
-const path = require("path");
+const path = require("path"); // لإستخراج امتداد الملف وتحديد النوع
 
 const app = express();
 // زيادة حجم الطلب لاستيعاب الصور والمرفقات المرفوعة
@@ -41,7 +41,7 @@ const users = {};
 // HELPERS
 // =============================
 
-// دالة لتخمين نوع الملف بناءً على الامتداد
+// دالة لتخمين نوع الملف بناءً على الامتداد لحل مشكلة الخطأ 400 في واتساب
 function getMimeType(fileName) {
   const ext = path.extname(fileName).toLowerCase();
   const map = {
@@ -72,7 +72,7 @@ function verifyMetaSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
-// دالة رفع الميديا لواتساب
+// دالة رفع الميديا لواتساب مع تحديد نوع المحتوى بدقة
 async function uploadMediaToWhatsApp(buffer, fileName) {
   const mimeType = getMimeType(fileName);
   console.log(`🚀 [Media Upload] Starting upload: ${fileName} as ${mimeType}`);
@@ -142,18 +142,13 @@ async function downloadMedia(mediaId) {
 }
 
 async function getOrCreateCustomer(name, phone) {
-  console.log(`🔍 [Zammad] Searching for customer: ${phone}`);
   try {
     const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
 
-    if (search.data && search.data.length > 0) {
-      console.log(`👤 [Zammad] Customer found: ID ${search.data[0].id}`);
-      return search.data[0].id;
-    }
+    if (search.data && search.data.length > 0) return search.data[0].id;
 
-    console.log(`🆕 [Zammad] Creating new customer...`);
     const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
       firstname: name, lastname: "(WhatsApp)", phone: phone, roles: ["Customer"]
     }, {
@@ -162,14 +157,11 @@ async function getOrCreateCustomer(name, phone) {
 
     return newUser.data.id;
   } catch (err) {
-    console.error("❌ [Zammad Customer] Error:", err.message);
     return Number(DEFAULT_CUSTOMER_ID); 
   }
 }
 
-// تعديل دالة إنشاء التذكرة لترجع الـ ID والـ Customer ID معاً
 async function createZammadTicket({ name, from }) {
-  console.log(`🎫 [Zammad] Creating ticket for: ${name}`);
   const customerId = await getOrCreateCustomer(name, from);
   const res = await axios.post(
     `${ZAMMAD_BASE_URL}/api/v1/tickets`,
@@ -179,35 +171,30 @@ async function createZammadTicket({ name, from }) {
       customer_id: customerId, 
       article: {
         body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-        type: "chat", 
-        internal: false, 
-        sender: "Customer", 
-        from: name,
-        user_id: customerId // الحل: ربط التذكرة بهوية الزبون مباشرة
+        type: "chat", internal: false, sender: "Customer", from: name,
+        user_id: customerId // (تعديل 1: ربط المقال الأول بهوية الزبون)
       },
     },
     { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
   );
-  console.log(`✅ [Zammad] Ticket Created: ID ${res.data?.id}`);
+  // (تعديل 2: نرجع رقم التذكرة ورقم الزبون معاً)
   return { ticketId: res.data?.id, customerId: customerId };
 }
 
 async function addZammadArticle(articlePayload) {
   articlePayload.type = "chat";
   articlePayload.sender = "Customer";
-  // هنا سيتم تمرير الـ user_id ضمن الـ articlePayload في الـ Webhook
   try {
     await axios.post(`${ZAMMAD_BASE_URL}/api/v1/ticket_articles`, articlePayload, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" },
     });
-    console.log(`✅ [Zammad Article] Added to ticket ${articlePayload.ticket_id}`);
   } catch (err) {
     console.error("❌ [Zammad Add Article] Error:", err.message);
   }
 }
 
 // ============================================================
-// [Zammad -> WhatsApp] - إرسال الردود من الموظف للزبون
+// [Zammad -> WhatsApp] - (المحافظة على الوسائط بالكامل)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -271,7 +258,6 @@ app.post("/zammad/webhook", async (req, res) => {
 
     return res.status(200).send("OK");
   } catch (error) {
-    console.error("❌ Zammad Webhook Error:", error.message);
     return res.sendStatus(500);
   }
 });
@@ -288,7 +274,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =============================
-// WEBHOOK RECEIVE (POST) - استقبال من الواتساب
+// WEBHOOK RECEIVE (POST) - استقبال من الواتساب مع القوائم المصلحة
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -305,7 +291,7 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // إدارة الجلسة
+    // (تعديل 3: إضافة customerId لحفظه في الجلسة)
     if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false };
     const user = users[from];
 
@@ -318,7 +304,6 @@ app.post("/webhook", async (req, res) => {
 
     // --- منطق القائمة الرئيسية (الرجوع أو البداية) ---
     if (!user.greeted || replyId === "back_to_main") {
-      console.log(`👋 [Bot] Greeting user: ${from}`);
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
@@ -334,13 +319,12 @@ app.post("/webhook", async (req, res) => {
         }
       });
       user.greeted = true;
-      user.support = false; 
+      user.support = false; // إلغاء وضع الدعم عند الرجوع للمنيو
       return res.sendStatus(200);
     }
 
     // --- قائمة منظومة التاجر الليبي ---
     if (replyId === "libyan_tajer") {
-      console.log(`🏦 [Bot] Libyan Tajer Selected`);
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
@@ -352,7 +336,7 @@ app.post("/webhook", async (req, res) => {
               title: "خيارات المنظومة",
               rows: [
                 { id: "knowledge", title: "📘 الأسئلة الشائعة", description: "دليل الاستخدام والحلول" },
-                { id: "support", title: "🧑‍💼 التحدث مع موظف الدعم", description: "تحويلك للدعم الفني" },
+                { id: "support", title: "🧑‍💼 الدعم الفني", description: "التحدث مع موظف الدعم" },
                 { id: "back_to_main", title: "🔙 الرجوع للمنيو الرئيسي", description: "اختيار منظومة أخرى" }
               ]
             }]
@@ -377,9 +361,9 @@ app.post("/webhook", async (req, res) => {
 
     if (replyId === "support") {
       if (!user.ticketId) {
-        const ticketInfo = await createZammadTicket({ name, from });
-        user.ticketId = ticketInfo.ticketId;
-        user.customerId = ticketInfo.customerId;
+        const result = await createZammadTicket({ name, from });
+        user.ticketId = result.ticketId;
+        user.customerId = result.customerId; // حفظ الـ ID هنا
       }
       user.support = true;
       await sendWhatsApp({
@@ -389,18 +373,12 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- إرسال المحتوى لـ Zammad (عند تفعيل الدعم) ---
+    // --- إرسال الوسائط والنصوص لـ Zammad (عند تفعيل الدعم) ---
     if (user.support && user.ticketId) {
-      console.log(`📤 [Forwarding] Message to Zammad Ticket: ${user.ticketId}`);
-      
-      // التأكد من وجود الـ Customer ID في الجلسة لنسب الرسالة له
-      if (!user.customerId) {
-        user.customerId = await getOrCreateCustomer(name, from);
-      }
-
+      // (تعديل 4: إضافة user_id لكي يعرف Zammad أن الزبون هو صاحب الرسالة)
       const articlePayload = { 
         ticket_id: user.ticketId, 
-        user_id: user.customerId, // هام: هذا هو الحل لمشكلة الاختصار AY
+        user_id: user.customerId, 
         from: name, 
         body: "" 
       };
@@ -429,5 +407,5 @@ app.post("/webhook", async (req, res) => {
 
 app.get("/", (req, res) => res.send("Webhook running ✅"));
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
