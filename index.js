@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - النسخة الشاملة مع إصلاح القوائم والرجوع وتصحيح هوية المرسل]
+ * [Full Complete Code - النسخة الشاملة مع إصلاح هوية المرسل]
  */
 
 const express = require("express");
@@ -161,7 +161,7 @@ async function getOrCreateCustomer(name, phone) {
   }
 }
 
-// تعديل: دالة إنشاء التذكرة لترجع المعرفين معاً وتنسب المقال للزبون
+// تعديل لضمان هوية المنشئ (الزبون) في أول رسالة
 async function createZammadTicket({ name, from }) {
   const customerId = await getOrCreateCustomer(name, from);
   const res = await axios.post(
@@ -176,11 +176,12 @@ async function createZammadTicket({ name, from }) {
         internal: false, 
         sender: "Customer", 
         from: name,
-        user_id: customerId // هام: لكي يظهر صاحب الرسالة هو الزبون
+        user_id: customerId // هذا السطر هو الذي يجعل الرسالة تظهر باسم الزبون وليس الـ Token
       },
     },
     { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
   );
+  // نرجع رقم التذكرة ومعرف الزبون لاستخدامه في المحادثة المستمرة
   return { ticketId: res.data?.id, customerId: customerId };
 }
 
@@ -277,7 +278,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =============================
-// WEBHOOK RECEIVE (POST) - استقبال من الواتساب مع القوائم المصلحة
+// WEBHOOK RECEIVE (POST) - استقبال من الواتساب
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -294,7 +295,7 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // تحديث: تخزين customerId في الجلسة لضمان نسب الرسائل اللاحقة له
+    // إضافة customerId للجلسة لضمان استمرار هوية المرسل الصحيحة
     if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false };
     const user = users[from];
 
@@ -305,7 +306,7 @@ app.post("/webhook", async (req, res) => {
       replyId = msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
     }
 
-    // --- منطق القائمة الرئيسية (الرجوع أو البداية) ---
+    // --- منطق القائمة الرئيسية ---
     if (!user.greeted || replyId === "back_to_main") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
@@ -322,7 +323,7 @@ app.post("/webhook", async (req, res) => {
         }
       });
       user.greeted = true;
-      user.support = false; // إلغاء وضع الدعم عند الرجوع للمنيو
+      user.support = false; 
       return res.sendStatus(200);
     }
 
@@ -349,7 +350,6 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- تنفيذ الخيارات (أسئلة شائعة / دعم فني) ---
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
@@ -364,6 +364,7 @@ app.post("/webhook", async (req, res) => {
 
     if (replyId === "support") {
       if (!user.ticketId) {
+        // نأخذ معرف التذكرة ومعرف الزبون
         const ticketData = await createZammadTicket({ name, from });
         user.ticketId = ticketData.ticketId;
         user.customerId = ticketData.customerId;
@@ -376,9 +377,9 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- إرسال الوسائط والنصوص لـ Zammad (عند تفعيل الدعم) ---
+    // --- إرسال الرسائل لـ Zammad وضمان ظهورها باسم الزبون ---
     if (user.support && user.ticketId) {
-      // تعديل هام: إرسال user_id لضمان ظهور الزبون كمرسل
+      // تمرير user_id الخاص بالزبون في كل مقال جديد
       const articlePayload = { 
         ticket_id: user.ticketId, 
         user_id: user.customerId, 
