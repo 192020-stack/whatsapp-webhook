@@ -3,7 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * [Full Complete Code - النسخة الشاملة مع إصلاح القوائم والرجوع]
+ * [Full Complete Code - النسخة الشاملة مع إصلاح القوائم والرجوع وتصحيح هوية المرسل]
  */
 
 const express = require("express");
@@ -161,6 +161,7 @@ async function getOrCreateCustomer(name, phone) {
   }
 }
 
+// تعديل: دالة إنشاء التذكرة لترجع المعرفين معاً وتنسب المقال للزبون
 async function createZammadTicket({ name, from }) {
   const customerId = await getOrCreateCustomer(name, from);
   const res = await axios.post(
@@ -171,13 +172,15 @@ async function createZammadTicket({ name, from }) {
       customer_id: customerId, 
       article: {
         body: `تم بدء تواصل دعم عبر WhatsApp\n\nالاسم: ${name}\nالرقم: ${from}`,
-        type: "chat", internal: false, sender: "Customer", from: name,
-        user_id: customerId // (تعديل 1: ربط المقال الأول بهوية الزبون)
+        type: "chat", 
+        internal: false, 
+        sender: "Customer", 
+        from: name,
+        user_id: customerId // هام: لكي يظهر صاحب الرسالة هو الزبون
       },
     },
     { headers: { Authorization: `Token token=${ZAMMAD_TOKEN}`, "Content-Type": "application/json" } }
   );
-  // (تعديل 2: نرجع رقم التذكرة ورقم الزبون معاً)
   return { ticketId: res.data?.id, customerId: customerId };
 }
 
@@ -291,7 +294,7 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // (تعديل 3: إضافة customerId لحفظه في الجلسة)
+    // تحديث: تخزين customerId في الجلسة لضمان نسب الرسائل اللاحقة له
     if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false };
     const user = users[from];
 
@@ -361,9 +364,9 @@ app.post("/webhook", async (req, res) => {
 
     if (replyId === "support") {
       if (!user.ticketId) {
-        const result = await createZammadTicket({ name, from });
-        user.ticketId = result.ticketId;
-        user.customerId = result.customerId; // حفظ الـ ID هنا
+        const ticketData = await createZammadTicket({ name, from });
+        user.ticketId = ticketData.ticketId;
+        user.customerId = ticketData.customerId;
       }
       user.support = true;
       await sendWhatsApp({
@@ -375,7 +378,7 @@ app.post("/webhook", async (req, res) => {
 
     // --- إرسال الوسائط والنصوص لـ Zammad (عند تفعيل الدعم) ---
     if (user.support && user.ticketId) {
-      // (تعديل 4: إضافة user_id لكي يعرف Zammad أن الزبون هو صاحب الرسالة)
+      // تعديل هام: إرسال user_id لضمان ظهور الزبون كمرسل
       const articlePayload = { 
         ticket_id: user.ticketId, 
         user_id: user.customerId, 
