@@ -3,8 +3,8 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * + Smart Notification (Open Ticket Alert added)
- * [Full Complete Code - النسخة الكاملة مع الإضافات المطلوبة]
+ * + Smart Notification & De-duplication Fix (Fix Double Sending)
+ * [Full Complete Code - النسخة الكاملة والمصححة]
  */
 
 const express = require("express");
@@ -12,10 +12,9 @@ const bodyParser = require("body-parser");
 const axios = require("axios");
 const crypto = require("crypto");
 const FormData = require("form-data");
-const path = require("path"); // لإستخراج امتداد الملف وتحديد النوع
+const path = require("path");
 
 const app = express();
-// زيادة حجم الطلب لاستيعاب الصور والمرفقات المرفوعة
 app.use(bodyParser.json({ limit: "50mb" })); 
 
 // ====================================
@@ -42,7 +41,6 @@ const users = {};
 // HELPERS
 // =============================
 
-// دالة لتخمين نوع الملف بناءً على الامتداد لحل مشكلة الخطأ 400 في واتساب
 function getMimeType(fileName) {
   const ext = path.extname(fileName).toLowerCase();
   const map = {
@@ -65,7 +63,6 @@ function verifyMetaSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
-// دالة رفع الميديا لواتساب مع تحديد نوع المحتوى بدقة
 async function uploadMediaToWhatsApp(buffer, fileName) {
   const mimeType = getMimeType(fileName);
   console.log(`🚀 [Media Upload] Starting upload: ${fileName} as ${mimeType}`);
@@ -79,7 +76,6 @@ async function uploadMediaToWhatsApp(buffer, fileName) {
       form,
       { headers: { ...form.getHeaders(), Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
     );
-    console.log(`✅ [Media Upload] ID: ${res.data.id}`);
     return res.data.id;
   } catch (error) {
     console.error(`❌ [Media Upload] Error:`, error.response?.data || error.message);
@@ -100,7 +96,6 @@ async function sendWhatsApp(payload) {
 }
 
 async function downloadMedia(mediaId) {
-  console.log(`📥 [Media Download] ID: ${mediaId}`);
   try {
     const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
@@ -131,7 +126,6 @@ async function getOrCreateCustomer(name, phone) {
     const search = await axios.get(`${ZAMMAD_BASE_URL}/api/v1/users/search?query=phone:${phone}`, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
-
     if (search.data && search.data.length > 0) return search.data[0].id;
 
     const newUser = await axios.post(`${ZAMMAD_BASE_URL}/api/v1/users`, {
@@ -139,7 +133,6 @@ async function getOrCreateCustomer(name, phone) {
     }, {
       headers: { Authorization: `Token token=${ZAMMAD_TOKEN}` }
     });
-
     return newUser.data.id;
   } catch (err) {
     return Number(DEFAULT_CUSTOMER_ID); 
@@ -187,7 +180,7 @@ async function addZammadArticle(articlePayload, customerId) {
 }
 
 // ============================================================
-// [Zammad -> WhatsApp] - (استقبال الردود + إغلاق التذكرة + إشعار الفتح)
+// [Zammad -> WhatsApp] - (معالجة الردود ومنع التكرار)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -199,56 +192,65 @@ app.post("/zammad/webhook", async (req, res) => {
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
     if (!phoneNumber) return res.status(200).send("No phone found");
 
-    // [إضافة] التأكد من وجود سجل للمستخدم في الذاكرة لتخزين الحالة
+    // تهيئة المستخدم وتتبع آخر مقال (lastArticleId)
     if (!users[phoneNumber]) {
-        users[phoneNumber] = { greeted: true, ticketId: ticket.id, customerId: ticket.customer_id, support: true, ticketState: null };
+        users[phoneNumber] = { 
+          greeted: true, 
+          ticketId: ticket.id, 
+          customerId: ticket.customer_id, 
+          support: true, 
+          ticketState: null,
+          lastArticleId: null // 👈 هذا هو مفتاح الحل
+        };
     }
 
-    // [إضافة] معالجة إشعار فتح التذكرة (Open Notification) - مرة واحدة فقط
+    // 1. معالجة إشعار فتح التذكرة (Open Notification)
     if (ticket.state === "open") {
-        // إذا كانت التذكرة مفتوحة ولم نرسل الإشعار من قبل
         if (users[phoneNumber].ticketState !== "open") {
             console.log(`🚀 Ticket Open Alert: ${ticket.id}`);
-            
             await sendWhatsApp({
                messaging_product: "whatsapp",
                to: phoneNumber,
                type: "text",
                text: { body: "👋 *تم استلام طلبك.*\n\nيقوم فريق الدعم الفني بمراجعة تذكرتك الآن وسيتم الرد عليك قريباً." }
             });
-
-            // تحديث الذاكرة لكي لا نرسل الرسالة مرة أخرى لنفس الحالة
             users[phoneNumber].ticketState = "open";
         }
     }
 
-    // 🔴 [جديد] - معالجة إغلاق التذكرة 🔴
-    // إذا كانت حالة التذكرة closed، نرسل رسالة ونصفر العداد
+    // 2. معالجة إغلاق التذكرة
     if (ticket.state === "closed") {
        console.log(`🔒 Ticket Closed: ${ticket.id}`);
-       
-       // 1. إرسال رسالة للزبون
        await sendWhatsApp({
          messaging_product: "whatsapp",
          to: phoneNumber,
          type: "text",
          text: { body: "✅ *تم إغلاق التذكرة بنجاح.*\n\nسعدنا بخدمتكم. إذا كان لديكم استفسار آخر، يمكنكم إرسال رسالة جديدة للبدء من القائمة الرئيسية." }
        });
-
-       // 2. تصفير حالة المستخدم ليبدأ من جديد (Hello Message)
        if (users[phoneNumber]) {
-         users[phoneNumber] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null };
+         users[phoneNumber] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
          console.log(`🔄 Session Reset for ${phoneNumber}`);
        }
-       
        return res.status(200).send("Ticket Closed Handled");
     }
 
-    // إذا لم تكن مغلقة، نكمل الإجراءات العادية (إرسال الردود)
+    // --- فلترة الرسائل ---
+    // إذا لم يكن هناك مقال، أو كان داخلياً، أو من الزبون، أو من النظام -> تجاهل
     if (!article || article.internal || article.sender === "Customer" || article.sender === "System") {
       return res.sendStatus(200);
     }
 
+    // 🔥 [الحل هنا] 🔥 منع التكرار
+    // إذا كان رقم المقال (Article ID) هو نفسه آخر واحد أرسلناه -> تجاهل واخرج فوراً
+    if (users[phoneNumber].lastArticleId === article.id) {
+        console.log(`⚠️ Duplicate Article Detected (${article.id}), Skipping...`);
+        return res.status(200).send("Duplicate Skipped");
+    }
+    
+    // إذا كانت رسالة جديدة، احفظ رقمها الآن لكي لا ترسلها مرة أخرى
+    users[phoneNumber].lastArticleId = article.id;
+
+    // --- إرسال المحتوى للواتساب ---
     let messageBody = (article.body || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
     if (article.attachments && article.attachments.length > 0) {
@@ -279,7 +281,6 @@ app.post("/zammad/webhook", async (req, res) => {
             payload[mediaType].caption = messageBody;
             messageBody = ""; 
           }
-
           await sendWhatsApp(payload);
         } catch (err) {
           console.error(`❌ Error processing attachment:`, err.message);
@@ -298,6 +299,7 @@ app.post("/zammad/webhook", async (req, res) => {
 
     return res.status(200).send("OK");
   } catch (error) {
+    console.error("Webhook Zammad Error:", error);
     return res.sendStatus(500);
   }
 });
@@ -331,8 +333,8 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // [تحديث] إضافة ticketState لتهيئة المستخدم
-    if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null };
+    // تهيئة المتغيرات مع الحقول الجديدة
+    if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
     const user = users[from];
 
     let replyId = "";
@@ -342,8 +344,7 @@ app.post("/webhook", async (req, res) => {
       replyId = msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
     }
 
-    // --- منطق القائمة الرئيسية (الرجوع أو البداية) ---
-    // هذا الشرط يعمل عندما تكون greeted = false (وهو ما يحدث عند إغلاق التذكرة)
+    // --- منطق القائمة الرئيسية ---
     if (!user.greeted || replyId === "back_to_main") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
@@ -360,7 +361,7 @@ app.post("/webhook", async (req, res) => {
         }
       });
       user.greeted = true;
-      user.support = false; // إلغاء وضع الدعم عند الرجوع للمنيو
+      user.support = false; 
       return res.sendStatus(200);
     }
 
@@ -387,7 +388,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- تنفيذ الخيارات (أسئلة شائعة / دعم فني) ---
+    // --- تنفيذ الخيارات ---
     if (replyId === "knowledge") {
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "interactive",
@@ -405,7 +406,6 @@ app.post("/webhook", async (req, res) => {
         const ticketInfo = await createZammadTicket({ name, from }); 
         user.ticketId = ticketInfo.ticketId; 
         user.customerId = ticketInfo.customerId; 
-        // [تحديث] تعيين الحالة الأولية لتفادي التضارب
         user.ticketState = "new";
       }
       user.support = true;
@@ -416,7 +416,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- إرسال الوسائط والنصوص لـ Zammad (عند تفعيل الدعم) ---
+    // --- إرسال الوسائط والنصوص لـ Zammad ---
     if (user.support && user.ticketId) {
       const articlePayload = { ticket_id: user.ticketId, from: name, body: "" };
 
