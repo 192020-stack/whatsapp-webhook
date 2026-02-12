@@ -3,8 +3,9 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * + Smart Notification & De-duplication Fix (Fix Double Sending)
- * [Full Complete Code - النسخة الكاملة والمصححة]
+ * + Smart Notification & De-duplication Fix
+ * + [NEW] Ticket Number Inclusion in Messages (Added)
+ * [Full Complete Code - النسخة الكاملة مع أرقام التذاكر]
  */
 
 const express = require("express");
@@ -160,7 +161,8 @@ async function createZammadTicket({ name, from }) {
       } 
     }
   );
-  return { ticketId: res.data?.id, customerId: customerId };
+  // [تعديل] إرجاع رقم التذكرة (number) بالإضافة للـ ID
+  return { ticketId: res.data?.id, ticketNumber: res.data?.number, customerId: customerId };
 }
 
 async function addZammadArticle(articlePayload, customerId) {
@@ -192,27 +194,29 @@ app.post("/zammad/webhook", async (req, res) => {
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
     if (!phoneNumber) return res.status(200).send("No phone found");
 
-    // تهيئة المستخدم وتتبع آخر مقال (lastArticleId)
+    // تهيئة المستخدم
     if (!users[phoneNumber]) {
         users[phoneNumber] = { 
           greeted: true, 
-          ticketId: ticket.id, 
+          ticketId: ticket.id,
+          ticketNumber: ticket.number, // تخزين رقم التذكرة
           customerId: ticket.customer_id, 
           support: true, 
           ticketState: null,
-          lastArticleId: null // 👈 هذا هو مفتاح الحل
+          lastArticleId: null 
         };
     }
 
     // 1. معالجة إشعار فتح التذكرة (Open Notification)
     if (ticket.state === "open") {
         if (users[phoneNumber].ticketState !== "open") {
-            console.log(`🚀 Ticket Open Alert: ${ticket.id}`);
+            console.log(`🚀 Ticket Open Alert: ${ticket.number}`);
             await sendWhatsApp({
                messaging_product: "whatsapp",
                to: phoneNumber,
                type: "text",
-               text: { body: "👋 *تم استلام طلبك.*\n\nيقوم فريق الدعم الفني بمراجعة تذكرتك الآن وسيتم الرد عليك قريباً." }
+               // [تعديل] إضافة رقم التذكرة هنا
+               text: { body: `👋 *تم استلام طلبك (تذكرة #${ticket.number}).*\n\nيقوم فريق الدعم الفني بمراجعة تذكرتك الآن وسيتم الرد عليك قريباً.` }
             });
             users[phoneNumber].ticketState = "open";
         }
@@ -220,34 +224,32 @@ app.post("/zammad/webhook", async (req, res) => {
 
     // 2. معالجة إغلاق التذكرة
     if (ticket.state === "closed") {
-       console.log(`🔒 Ticket Closed: ${ticket.id}`);
+       console.log(`🔒 Ticket Closed: ${ticket.number}`);
        await sendWhatsApp({
          messaging_product: "whatsapp",
          to: phoneNumber,
          type: "text",
-         text: { body: "✅ *تم إغلاق التذكرة بنجاح.*\n\nسعدنا بخدمتكم. إذا كان لديكم استفسار آخر، يمكنكم إرسال رسالة جديدة للبدء من القائمة الرئيسية." }
+         // [تعديل] إضافة رقم التذكرة هنا
+         text: { body: `✅ *تم إغلاق التذكرة #${ticket.number} بنجاح.*\n\nسعدنا بخدمتكم. إذا كان لديكم استفسار آخر، يمكنكم إرسال رسالة جديدة للبدء من القائمة الرئيسية.` }
        });
        if (users[phoneNumber]) {
-         users[phoneNumber] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
+         users[phoneNumber] = { greeted: false, ticketId: null, ticketNumber: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
          console.log(`🔄 Session Reset for ${phoneNumber}`);
        }
        return res.status(200).send("Ticket Closed Handled");
     }
 
     // --- فلترة الرسائل ---
-    // إذا لم يكن هناك مقال، أو كان داخلياً، أو من الزبون، أو من النظام -> تجاهل
     if (!article || article.internal || article.sender === "Customer" || article.sender === "System") {
       return res.sendStatus(200);
     }
 
-    // 🔥 [الحل هنا] 🔥 منع التكرار
-    // إذا كان رقم المقال (Article ID) هو نفسه آخر واحد أرسلناه -> تجاهل واخرج فوراً
+    // 🔥 منع التكرار
     if (users[phoneNumber].lastArticleId === article.id) {
         console.log(`⚠️ Duplicate Article Detected (${article.id}), Skipping...`);
         return res.status(200).send("Duplicate Skipped");
     }
     
-    // إذا كانت رسالة جديدة، احفظ رقمها الآن لكي لا ترسلها مرة أخرى
     users[phoneNumber].lastArticleId = article.id;
 
     // --- إرسال المحتوى للواتساب ---
@@ -333,8 +335,8 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // / تهيئة المتغيرات مع الحقول الجديدة
-    if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
+    // تهيئة المتغيرات
+    if (!users[from]) users[from] = { greeted: false, ticketId: null, ticketNumber: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
     const user = users[from];
 
     let replyId = "";
@@ -405,13 +407,15 @@ app.post("/webhook", async (req, res) => {
       if (!user.ticketId) {
         const ticketInfo = await createZammadTicket({ name, from }); 
         user.ticketId = ticketInfo.ticketId; 
+        user.ticketNumber = ticketInfo.ticketNumber; // حفظ رقم التذكرة
         user.customerId = ticketInfo.customerId; 
         user.ticketState = "new";
       }
       user.support = true;
       await sendWhatsApp({
         messaging_product: "whatsapp", to: from, type: "text",
-        text: {body: "✅ تم فتح تذكرة بنجاح.\n\nالرجاء كتابة رسالتك أو طلبك الآن، وسيتم الرد عليك في أقرب وقت." }
+        // [تعديل] إضافة رقم التذكرة هنا
+        text: {body: `✅ تم فتح تذكرة بنجاح (رقم: ${user.ticketNumber || "جديدة"}).\n\nالرجاء كتابة رسالتك أو طلبك الآن، وسيتم الرد عليك في أقرب وقت.` }
       });
       return res.sendStatus(200);
     }
