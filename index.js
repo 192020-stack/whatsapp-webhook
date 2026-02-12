@@ -3,8 +3,7 @@
  * Supports: text, image, video, audio (voice notes), document
  * + Outbound Support (Zammad -> WhatsApp)
  * + Auto Customer Creation & Chat Type Support
- * + Smart Notification (New -> Open Alert)
- * [Full Complete Code - النسخة الكاملة والمعدلة]
+ * [Full Complete Code - النسخة الكاملة مع تفعيل إغلاق التذكرة وإعادة القائمة]
  */
 
 const express = require("express");
@@ -187,7 +186,7 @@ async function addZammadArticle(articlePayload, customerId) {
 }
 
 // ============================================================
-// [Zammad -> WhatsApp] - (استقبال الردود + إغلاق التذكرة + إشعار الفتح)
+// [Zammad -> WhatsApp] - (استقبال الردود + إغلاق التذكرة)
 // ============================================================
 app.post("/zammad/webhook", async (req, res) => {
   console.log("📨 [Webhook Zammad] Event received");
@@ -198,30 +197,6 @@ app.post("/zammad/webhook", async (req, res) => {
     const phoneMatch = (ticket.title || "").match(/\(([^)]+)\)/);
     const phoneNumber = phoneMatch ? phoneMatch[1] : null;
     if (!phoneNumber) return res.status(200).send("No phone found");
-
-    // تهيئة المستخدم في الذاكرة إذا لم يكن موجوداً (لحفظ الحالة)
-    if (!users[phoneNumber]) {
-        users[phoneNumber] = { greeted: true, ticketId: ticket.id, customerId: ticket.customer_id, support: true, ticketState: null };
-    }
-
-    // 🔵 [جديد] - معالجة إشعار فتح التذكرة (Open Notification) 🔵
-    // يعمل عندما يحول الموظف الحالة إلى Open
-    if (ticket.state === "open") {
-        // نتحقق: هل أرسلنا رسالة "جاري المعالجة" مسبقاً؟ (لمنع التكرار)
-        if (users[phoneNumber].ticketState !== "open") {
-            console.log(`🚀 Ticket Open Alert: ${ticket.id}`);
-            
-            await sendWhatsApp({
-               messaging_product: "whatsapp",
-               to: phoneNumber,
-               type: "text",
-               text: { body: "👋 *تم استلام طلبك.*\n\nيقوم فريق الدعم الفني بمراجعة تذكرتك الآن وسيتم الرد عليك قريباً." }
-            });
-
-            // تحديث الذاكرة لكي لا نرسل الرسالة مرة أخرى لنفس التذكرة
-            users[phoneNumber].ticketState = "open";
-        }
-    }
 
     // 🔴 [جديد] - معالجة إغلاق التذكرة 🔴
     // إذا كانت حالة التذكرة closed، نرسل رسالة ونصفر العداد
@@ -238,7 +213,7 @@ app.post("/zammad/webhook", async (req, res) => {
 
        // 2. تصفير حالة المستخدم ليبدأ من جديد (Hello Message)
        if (users[phoneNumber]) {
-         users[phoneNumber] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null };
+         users[phoneNumber] = { greeted: false, ticketId: null, customerId: null, support: false };
          console.log(`🔄 Session Reset for ${phoneNumber}`);
        }
        
@@ -332,8 +307,7 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // تهيئة المستخدم مع خاصية ticketState الجديدة
-    if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null };
+    if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false };
     const user = users[from];
 
     let replyId = "";
@@ -406,7 +380,6 @@ app.post("/webhook", async (req, res) => {
         const ticketInfo = await createZammadTicket({ name, from }); 
         user.ticketId = ticketInfo.ticketId; 
         user.customerId = ticketInfo.customerId; 
-        user.ticketState = "new"; // تعيين حالة أولية
       }
       user.support = true;
       await sendWhatsApp({
