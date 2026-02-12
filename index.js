@@ -333,7 +333,7 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const name = contacts?.[0]?.profile?.name || "مستخدم";
 
-    // تهيئة المتغيرات مع الحقول الجديدة
+    // / تهيئة المتغيرات مع الحقول الجديدة
     if (!users[from]) users[from] = { greeted: false, ticketId: null, customerId: null, support: false, ticketState: null, lastArticleId: null };
     const user = users[from];
 
